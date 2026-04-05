@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v29";
+const CACHE_VERSION = "v30";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -334,6 +334,25 @@ function looksLikeModifierPriceContext(text: string) {
     normalized.includes("substitute") ||
     normalized.includes("additional charge")
   );
+}
+
+function parsePriceValue(text: string) {
+  const numeric = Number(text.replace(/[^0-9.]/g, ""));
+  return Number.isFinite(numeric) ? numeric : Number.NaN;
+}
+
+function chooseBestPriceLine(lines: string[]) {
+  const candidates = lines
+    .filter((line) => /^\$?\d{1,2}(?:\.\d{2})?$/.test(line))
+    .map((line) => ({ line, value: parsePriceValue(line) }))
+    .filter(({ line, value }) => Number.isFinite(value) && !looksLikeModifierPriceContext(line));
+
+  if (candidates.length === 0) return null;
+
+  const entreeCandidate = candidates.find(({ value }) => value >= 5);
+  if (entreeCandidate) return entreeCandidate.line;
+
+  return candidates[candidates.length - 1].line;
 }
 
 function resultMatchesQueryStrictly(result: SearchResult, query: string) {
@@ -717,10 +736,7 @@ function parseForwardPriceMenuHits(html: string, dishQuery: string, sourceUrl: s
     const nextLines = lines
       .slice(i + 1, i + 9)
       .filter((candidate) => !isSeparatorLine(candidate));
-    const priceLine = nextLines.find(
-      (candidate) =>
-        /^\$?\d{1,2}(?:\.\d{2})?$/.test(candidate) && !looksLikeModifierPriceContext(candidate)
-    );
+    const priceLine = chooseBestPriceLine(nextLines);
     if (!priceLine) continue;
 
     const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
@@ -795,9 +811,7 @@ function parseLooseTextBlockHits(html: string, dishQuery: string, sourceUrl: str
     if (!queryMatchesText(dishQuery, itemName)) continue;
 
     const lookahead = lines.slice(i + 1, i + 15);
-    const priceLine = lookahead.find(
-      (line) => /^\$?\d{1,2}(?:\.\d{2})?$/.test(line) && !looksLikeModifierPriceContext(line)
-    );
+    const priceLine = chooseBestPriceLine(lookahead);
     if (!priceLine) continue;
 
     const priceIndex = lookahead.indexOf(priceLine);
