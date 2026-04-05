@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v42";
+const CACHE_VERSION = "v43";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -180,6 +180,15 @@ const MEAT_SUBSTITUTE_PHRASES = [
   "mock chicken",
   "impossible chicken",
   "beyond chicken",
+  "veg dog",
+  "vegan dog",
+  "veggie dog",
+  "vegetarian dog",
+  "sub veg dog",
+  "sub vegan dog",
+  "sub veggie dog",
+  "substitute veg dog",
+  "substitute vegan dog",
 ];
 const MEAT_SUBSTITUTE_SIGNALS = new Set([
   "fake",
@@ -199,7 +208,10 @@ const MEAT_SUBSTITUTE_SIGNALS = new Set([
 ]);
 
 function parseQueryIntent(query: string): QueryIntent {
-  const normalizedQuery = tokenize(query).map((token) => singularize(token));
+  const normalizedQuery = tokenize(query)
+    .map((token) => singularize(token))
+    .filter((token, index, tokens) => !(token === "hot" && tokens[index + 1] === "dog"));
+
   return {
     coreTokens: normalizedQuery.filter((token) => !DIETARY_TERMS.has(token)),
     dietaryTokens: normalizedQuery.filter((token) => DIETARY_TERMS.has(token)),
