@@ -49,7 +49,7 @@ type SearchResponsePayload = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v22";
+const CACHE_VERSION = "v23";
 const FETCH_TIMEOUT_MS = 8000;
 const SITE_CHECK_BATCH_SIZE = 4;
 const MAX_CANDIDATE_RESTAURANTS = 15;
@@ -590,24 +590,31 @@ function parseForwardPriceMenuHits(html: string, dishQuery: string, sourceUrl: s
       continue;
     }
 
+    if (isPriceOnlyText(line)) continue;
+    if (looksLikeGarbageText(line) || looksLikeGenericItemName(line)) continue;
+
     const nextLines = lines.slice(i + 1, i + 5);
     const priceLine = nextLines.find((candidate) => /^\$?\d{1,2}(?:\.\d{2})?$/.test(candidate));
     if (!priceLine) continue;
-
-    const blockText = [line, ...nextLines].join(" ");
-    const lineMatches =
-      queryMatchesText(dishQuery, line) ||
-      queryMatchesText(dishQuery, blockText) ||
-      queryMatchesContext(dishQuery, blockText, currentHeading);
-    if (!lineMatches) continue;
 
     const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
     const priceIndex = nextLines.indexOf(priceLine);
     const detailLines = nextLines.slice(0, priceIndex).filter((candidate) => !candidate.startsWith("$"));
     const description = detailLines.join(" ").trim();
+    const relevantBlock = [line, description].filter(Boolean).join(" ").trim();
+
+    const lineMatches =
+      queryMatchesText(dishQuery, line) ||
+      queryMatchesText(dishQuery, relevantBlock) ||
+      queryMatchesContext(dishQuery, relevantBlock, currentHeading);
+    if (!lineMatches) continue;
 
     if (!line || likelyCategoryLabel(line)) continue;
-    if (looksLikeGarbageText(line) || looksLikeGarbageText(description) || looksLikeGarbageText(blockText)) {
+    if (
+      looksLikeGarbageText(line) ||
+      looksLikeGarbageText(description) ||
+      looksLikeGarbageText(relevantBlock)
+    ) {
       continue;
     }
     if (
@@ -937,6 +944,38 @@ function dedupePlaces(places: Place[]) {
   return Array.from(deduped.values());
 }
 
+async function collectResultsForPlaces(
+  places: Place[],
+  dish: string,
+  center: { lat: number; lng: number }
+) {
+  const placeResults = await chunkedMap(places, SITE_CHECK_BATCH_SIZE, async (p) => {
+    const website = p.websiteUri as string | undefined;
+    if (!website) return [] as SearchResult[];
+
+    const hits = await findDishHitsForWebsite(website, dish);
+    if (hits.length === 0) return [] as SearchResult[];
+
+    return hits.map((hit) => ({
+      restaurantName: p.displayName?.text || "Unknown",
+      address: p.formattedAddress || "",
+      rating: p.rating,
+      openNow: p.currentOpeningHours?.openNow,
+      dish,
+      itemName: hit.itemName,
+      price: hit.price,
+      description: hit.description,
+      sourceType: hit.sourceType || "website_or_ordering_page",
+      sourceUrl: hit.sourceUrl,
+      websiteUrl: website,
+      googleMapsUrl: p.googleMapsUri || null,
+      distanceMiles: distanceMiles(center.lat, center.lng, p.location?.latitude, p.location?.longitude),
+    }));
+  });
+
+  return placeResults.flat();
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { dish, address, radiusMiles } = await req.json();
@@ -1047,37 +1086,15 @@ export async function POST(req: NextRequest) {
       await setCachedValue(placesCacheKey, places);
     }
 
-    const crawlablePlaces = places.filter((p) => p.websiteUri).slice(0, MAX_CANDIDATE_RESTAURANTS);
-    const placeResults = await chunkedMap(crawlablePlaces, SITE_CHECK_BATCH_SIZE, async (p) => {
-      const website = p.websiteUri as string | undefined;
-      if (!website) return [] as SearchResult[];
+    const crawlablePlaces = places.filter((p) => p.websiteUri);
+    const firstPassPlaces = crawlablePlaces.slice(0, MAX_CANDIDATE_RESTAURANTS);
+    let results: SearchResult[] = await collectResultsForPlaces(firstPassPlaces, dish, center);
 
-      const hits = await findDishHitsForWebsite(website, dish);
-      if (hits.length === 0) return [] as SearchResult[];
-
-      return hits.map((hit) => ({
-          restaurantName: p.displayName?.text || "Unknown",
-          address: p.formattedAddress || "",
-          rating: p.rating,
-          openNow: p.currentOpeningHours?.openNow,
-          dish,
-          itemName: hit.itemName,
-          price: hit.price,
-          description: hit.description,
-          sourceType: hit.sourceType || "website_or_ordering_page",
-          sourceUrl: hit.sourceUrl,
-          websiteUrl: website,
-          googleMapsUrl: p.googleMapsUri || null,
-          distanceMiles: distanceMiles(
-            center.lat,
-            center.lng,
-            p.location?.latitude,
-            p.location?.longitude
-          ),
-        }));
-    });
-
-    const results: SearchResult[] = placeResults.flat();
+    if (results.length < 8 && crawlablePlaces.length > MAX_CANDIDATE_RESTAURANTS) {
+      const overflowPlaces = crawlablePlaces.slice(MAX_CANDIDATE_RESTAURANTS);
+      const overflowResults = await collectResultsForPlaces(overflowPlaces, dish, center);
+      results = [...results, ...overflowResults];
+    }
 
     const requestedRadiusMiles = Number(radiusMiles || 1);
     const filteredResults = results.filter(
