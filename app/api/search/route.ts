@@ -586,6 +586,52 @@ function resultsLookLikeSameDish(a: SearchResult, b: SearchResult) {
   return false;
 }
 
+function deriveDescriptionFromItemText(itemName: string, itemText: string) {
+  const cleanedItemName = cleanDisplayText(itemName);
+  const cleanedItemText = cleanDisplayText(itemText);
+
+  if (!cleanedItemText || cleanedItemText === cleanedItemName) return "";
+  if (isPriceOnlyText(cleanedItemText)) return "";
+
+  const normalizedItemName = normalize(cleanedItemName);
+  const normalizedItemText = normalize(cleanedItemText);
+
+  if (normalizedItemText.startsWith(normalizedItemName)) {
+    const suffix = cleanedItemText.slice(cleanedItemName.length).replace(/^[\s,:.-]+/, "").trim();
+    if (
+      suffix &&
+      !isPriceOnlyText(suffix) &&
+      !looksLikeGarbageText(suffix) &&
+      !looksLikeGenericItemName(suffix)
+    ) {
+      return suffix;
+    }
+  }
+
+  return "";
+}
+
+function finalizedDescription(hit: MenuHit) {
+  const explicit = cleanDisplayText(hit.description || "");
+  if (
+    explicit &&
+    !isPriceOnlyText(explicit) &&
+    !looksLikeGarbageText(explicit) &&
+    !looksLikeGenericItemName(explicit)
+  ) {
+    return explicit;
+  }
+
+  return deriveDescriptionFromItemText(hit.itemName, hit.itemText);
+}
+
+function canonicalItemKey(itemName: string) {
+  return normalize(itemName)
+    .replace(/^(l|d)\s+/, "")
+    .replace(/^(lunch|dinner)\s+/, "")
+    .trim();
+}
+
 function deriveItemNameAndDescription(raw: string, dishQuery: string, currentHeading: string) {
   const cleaned = cleanDisplayText(raw).replace(/\s*\$\s?\d{1,3}(?:\.\d{2})?\s*/g, " ").trim();
   const intent = parseQueryIntent(dishQuery);
@@ -1339,7 +1385,7 @@ async function findDishHitsForKnownFallback(
     dish,
     itemName: hit.itemName,
     price: hit.price,
-    description: hit.description,
+    description: finalizedDescription(hit),
     sourceType: hit.sourceType || "website_or_ordering_page",
     sourceUrl: hit.sourceUrl,
     websiteUrl: fallback.websiteUrl,
@@ -1480,7 +1526,7 @@ async function collectResultsForPlaces(
       dish,
       itemName: hit.itemName,
       price: hit.price,
-      description: hit.description,
+      description: finalizedDescription(hit),
       sourceType: hit.sourceType || "website_or_ordering_page",
       sourceUrl: hit.sourceUrl,
       websiteUrl: website,
@@ -1713,7 +1759,26 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const finalResults = Array.from(dedupedResults.values())
+    const groupedResults = new Map<string, SearchResult>();
+    for (const result of dedupedResults.values()) {
+      const groupKey = `${normalize(result.address)}|${canonicalItemKey(result.itemName)}`;
+      const existing = groupedResults.get(groupKey);
+      if (!existing) {
+        groupedResults.set(groupKey, result);
+        continue;
+      }
+
+      const resultScore = resultQualityScore(result);
+      const existingScore = resultQualityScore(existing);
+      if (
+        resultScore > existingScore ||
+        (resultScore === existingScore && numericPrice(result.price) < numericPrice(existing.price))
+      ) {
+        groupedResults.set(groupKey, result);
+      }
+    }
+
+    const finalResults = Array.from(groupedResults.values())
         .sort((a, b) => {
           const priceDifference = numericPrice(a.price) - numericPrice(b.price);
           if (priceDifference !== 0) return priceDifference;
