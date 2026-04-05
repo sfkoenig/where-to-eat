@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v31";
+const CACHE_VERSION = "v32";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -467,6 +467,62 @@ function selectDescriptionAroundPrice(lines: string[], priceIndex: number) {
   const preferred = selectDescriptionLines([...before, ...after]);
   if (preferred) return preferred;
   return selectDescriptionLines(lines);
+}
+
+function parseLocalBlockMenuHits(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
+  const $ = cheerio.load(html);
+  const hits: MenuHit[] = [];
+  const seen = new Set<string>();
+
+  $("article, section, li, div").each((_, el) => {
+    const blockLines = $(el)
+      .find("h1, h2, h3, h4, h5, h6, p, span, div, li, td")
+      .map((__, child) => cleanDisplayText($(child).text()))
+      .get()
+      .filter((line) => line.length > 1 && line.length < 220 && !isSeparatorLine(line));
+
+    if (blockLines.length < 2) return;
+
+    const candidateItem = blockLines.find(
+      (line) =>
+        !isPriceOnlyText(line) &&
+        !looksLikeGarbageText(line) &&
+        !looksLikeGenericItemName(line) &&
+        !looksLikeOptionLine(line) &&
+        queryMatchesText(dishQuery, line)
+    );
+    if (!candidateItem) return;
+
+    const priceLine = chooseBestPriceLine(blockLines);
+    if (!priceLine) return;
+
+    const priceIndex = blockLines.indexOf(priceLine);
+    const itemIndex = blockLines.indexOf(candidateItem);
+    if (itemIndex === -1 || priceIndex === -1) return;
+    if (Math.abs(priceIndex - itemIndex) > 6) return;
+
+    const description = selectDescriptionAroundPrice(blockLines, priceIndex);
+    const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
+    const key = `${normalize(candidateItem)}|${price}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    hits.push({
+      itemName: candidateItem,
+      description: description === candidateItem ? "" : description,
+      itemText: [candidateItem, description].filter(Boolean).join(" "),
+      price,
+      sourceUrl,
+      sourceType:
+        sourceUrl.includes("toasttab.com")
+          ? "toast_ordering"
+          : sourceUrl.includes("spoton.com")
+            ? "spoton_ordering"
+            : "website_or_ordering_page",
+    });
+  });
+
+  return hits;
 }
 
 function cleanDisplayText(text: string) {
@@ -1136,6 +1192,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
 
   // Try homepage
   allHits.push(...extractMenuHitsFromHtml(homeHtml, dish, websiteUrl));
+  allHits.push(...parseLocalBlockMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseSequentialMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseForwardPriceMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseLooseTextBlockHits(homeHtml, dish, websiteUrl));
@@ -1154,6 +1211,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
     const html = await fetchText(link);
     if (!html) continue;
     allHits.push(...extractMenuHitsFromHtml(html, dish, link));
+    allHits.push(...parseLocalBlockMenuHits(html, dish, link));
     allHits.push(...parseSequentialMenuHits(html, dish, link));
     allHits.push(...parseForwardPriceMenuHits(html, dish, link));
     allHits.push(...parseLooseTextBlockHits(html, dish, link));
@@ -1169,6 +1227,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
       const nestedHtml = await fetchText(nestedLink);
       if (!nestedHtml) continue;
       allHits.push(...extractMenuHitsFromHtml(nestedHtml, dish, nestedLink));
+      allHits.push(...parseLocalBlockMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseSequentialMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseForwardPriceMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseLooseTextBlockHits(nestedHtml, dish, nestedLink));
