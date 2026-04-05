@@ -728,6 +728,61 @@ function parseForwardPriceMenuHits(html: string, dishQuery: string, sourceUrl: s
   return hits;
 }
 
+function parseLooseTextBlockHits(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
+  const text = cheerio.load(html)("body").text();
+  const lines = text
+    .split("\n")
+    .map((line) => cleanDisplayText(line))
+    .filter((line) => line.length > 1 && line.length < 280 && !isSeparatorLine(line));
+
+  const hits: MenuHit[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const itemName = lines[i];
+    if (isPriceOnlyText(itemName)) continue;
+    if (looksLikeGarbageText(itemName) || looksLikeGenericItemName(itemName)) continue;
+    if (!queryMatchesText(dishQuery, itemName)) continue;
+
+    const lookahead = lines.slice(i + 1, i + 15);
+    const priceLine = lookahead.find((line) => /^\$?\d{1,2}(?:\.\d{2})?$/.test(line));
+    if (!priceLine) continue;
+
+    const priceIndex = lookahead.indexOf(priceLine);
+    const description = lookahead
+      .slice(0, priceIndex)
+      .filter(
+        (line) =>
+          !looksLikeGarbageText(line) &&
+          !looksLikeGenericItemName(line) &&
+          !/^(small|large|tofu\s*\/\s*veggies|chicken or pork|beef|shrimp)$/i.test(line)
+      )
+      .join(" ")
+      .trim();
+
+    const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
+    const key = `${normalize(itemName)}|${price}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    hits.push({
+      itemName,
+      description,
+      itemText: [itemName, description].filter(Boolean).join(" "),
+      price,
+      sourceUrl,
+      sourceType:
+        sourceUrl.includes("toasttab.com")
+          ? "toast_ordering"
+          : sourceUrl.includes("spoton.com")
+            ? "spoton_ordering"
+            : "website_or_ordering_page",
+    });
+  }
+
+  return hits;
+}
+
 function sortLinksByPriority(links: string[]) {
   const priority = (link: string) => {
     const lower = link.toLowerCase();
@@ -904,6 +959,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
   allHits.push(...extractMenuHitsFromHtml(homeHtml, dish, websiteUrl));
   allHits.push(...parseSequentialMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseForwardPriceMenuHits(homeHtml, dish, websiteUrl));
+  allHits.push(...parseLooseTextBlockHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseLittleChihuahuaMenu(homeHtml, dish, websiteUrl));
 
   // Try menu/order links (Toast/Slice/etc)
@@ -920,6 +976,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
     allHits.push(...extractMenuHitsFromHtml(html, dish, link));
     allHits.push(...parseSequentialMenuHits(html, dish, link));
     allHits.push(...parseForwardPriceMenuHits(html, dish, link));
+    allHits.push(...parseLooseTextBlockHits(html, dish, link));
     allHits.push(...parseLittleChihuahuaMenu(html, dish, link));
 
     // One more level deep for category links like ?category=Vegetarian+Burritos
@@ -933,6 +990,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
       allHits.push(...extractMenuHitsFromHtml(nestedHtml, dish, nestedLink));
       allHits.push(...parseSequentialMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseForwardPriceMenuHits(nestedHtml, dish, nestedLink));
+      allHits.push(...parseLooseTextBlockHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseLittleChihuahuaMenu(nestedHtml, dish, nestedLink));
     }
   }
