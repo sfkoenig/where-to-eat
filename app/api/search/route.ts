@@ -56,6 +56,11 @@ type SearchResponsePayload = {
   };
 };
 
+type PlaceCollectionResult = {
+  results: SearchResult[];
+  diagnostics: string[];
+};
+
 type KnownRestaurantFallback = {
   restaurantName: string;
   address: string;
@@ -1078,12 +1083,14 @@ async function collectResultsForPlaces(
   places: Place[],
   dish: string,
   center: { lat: number; lng: number }
-) {
+) : Promise<PlaceCollectionResult> {
+  const diagnostics: string[] = [];
   const placeResults = await chunkedMap(places, SITE_CHECK_BATCH_SIZE, async (p) => {
     const website = p.websiteUri as string | undefined;
     if (!website) return [] as SearchResult[];
 
     const hits = await findDishHitsForWebsite(website, dish);
+    diagnostics.push(`${placeLabel(p)} [crawl]: hits=${hits.length}, website=${website}`);
     if (hits.length === 0) return [] as SearchResult[];
 
     return hits.map((hit) => ({
@@ -1103,7 +1110,7 @@ async function collectResultsForPlaces(
     }));
   });
 
-  return placeResults.flat();
+  return { results: placeResults.flat(), diagnostics };
 }
 
 function placeLabel(place: Place) {
@@ -1258,12 +1265,15 @@ export async function POST(req: NextRequest) {
 
     const crawlablePlaces = enrichedPlaces.filter((p) => p.websiteUri);
     const firstPassPlaces = crawlablePlaces.slice(0, MAX_CANDIDATE_RESTAURANTS);
-    let results: SearchResult[] = await collectResultsForPlaces(firstPassPlaces, dish, center);
+    const firstPassCollection = await collectResultsForPlaces(firstPassPlaces, dish, center);
+    let results: SearchResult[] = firstPassCollection.results;
+    const crawlDiagnostics = [...firstPassCollection.diagnostics];
 
     if (results.length === 0 && crawlablePlaces.length > MAX_CANDIDATE_RESTAURANTS) {
       const overflowPlaces = crawlablePlaces.slice(MAX_CANDIDATE_RESTAURANTS);
-      const overflowResults = await collectResultsForPlaces(overflowPlaces, dish, center);
-      results = [...results, ...overflowResults];
+      const overflowCollection = await collectResultsForPlaces(overflowPlaces, dish, center);
+      results = [...results, ...overflowCollection.results];
+      crawlDiagnostics.push(...overflowCollection.diagnostics);
     }
 
     const cuisineKeyword = inferCuisineKeyword(dish);
@@ -1282,6 +1292,9 @@ export async function POST(req: NextRequest) {
       if (alreadyPresent) continue;
 
       const fallbackResults = await findDishHitsForKnownFallback(fallback, dish);
+      crawlDiagnostics.push(
+        `${fallback.restaurantName} [fallback crawl]: hits=${fallbackResults.length}, sources=${fallback.sourceUrls.length}`
+      );
       results.push(
         ...fallbackResults.map((result) => ({
           ...result,
@@ -1352,6 +1365,8 @@ export async function POST(req: NextRequest) {
         `${fallback.restaurantName} [fallback]: in_radius=yes, matched=${fallbackMatched ? "yes" : "no"}`
       );
     }
+
+    diagnosticsLines.push(...crawlDiagnostics.slice(0, 25));
 
     const responsePayload: SearchResponsePayload = {
       results: finalResults,
