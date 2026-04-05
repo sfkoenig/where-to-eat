@@ -461,6 +461,14 @@ function selectDescriptionLines(lines: string[]) {
     .trim();
 }
 
+function selectDescriptionAroundPrice(lines: string[], priceIndex: number) {
+  const before = lines.slice(Math.max(0, priceIndex - 3), priceIndex);
+  const after = lines.slice(priceIndex + 1, priceIndex + 4);
+  const preferred = selectDescriptionLines([...before, ...after]);
+  if (preferred) return preferred;
+  return selectDescriptionLines(lines);
+}
+
 function cleanDisplayText(text: string) {
   return text
     .replace(/([a-z])([A-Z])/g, "$1 $2")
@@ -815,10 +823,7 @@ function parseLooseTextBlockHits(html: string, dishQuery: string, sourceUrl: str
     if (!priceLine) continue;
 
     const priceIndex = lookahead.indexOf(priceLine);
-    const description = selectDescriptionLines([
-      ...lookahead.slice(0, priceIndex),
-      ...lookahead.slice(priceIndex + 1, priceIndex + 3),
-    ]);
+    const description = selectDescriptionAroundPrice(lookahead, priceIndex);
 
     const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
     const key = `${normalize(itemName)}|${price}`;
