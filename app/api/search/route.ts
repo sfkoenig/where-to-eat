@@ -686,6 +686,18 @@ function sortLinksByPriority(links: string[]) {
   return [...links].sort((a, b) => priority(a) - priority(b));
 }
 
+function knownOrderingLinksForWebsite(websiteUrl: string) {
+  const normalizedWebsite = normalize(websiteUrl);
+
+  if (normalizedWebsite.includes("khobkhunsf.com")) {
+    return [
+      "https://order.toasttab.com/online/khob-khun-thai-cuisine-breakfast-3741-geary-blvd",
+    ];
+  }
+
+  return [];
+}
+
 function parseLittleChihuahuaMenu(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
   if (!sourceUrl.includes("thelittlechihuahua.com")) return [];
 
@@ -840,7 +852,10 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
   allHits.push(...parseLittleChihuahuaMenu(homeHtml, dish, websiteUrl));
 
   // Try menu/order links (Toast/Slice/etc)
-  const links = sortLinksByPriority(collectRelevantLinks(homeHtml, websiteUrl, dish));
+  const links = sortLinksByPriority([
+    ...knownOrderingLinksForWebsite(websiteUrl),
+    ...collectRelevantLinks(homeHtml, websiteUrl, dish),
+  ]);
   for (const link of links) {
     if (visitedLinks.has(link)) continue;
     visitedLinks.add(link);
