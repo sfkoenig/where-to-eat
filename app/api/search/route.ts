@@ -49,7 +49,7 @@ type SearchResponsePayload = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v20";
+const CACHE_VERSION = "v21";
 const FETCH_TIMEOUT_MS = 8000;
 const SITE_CHECK_BATCH_SIZE = 4;
 const MAX_CANDIDATE_RESTAURANTS = 15;
@@ -331,18 +331,46 @@ function looksLikeGarbageText(text: string) {
   );
 }
 
+function looksLikeGenericItemName(text: string) {
+  const normalized = normalize(text);
+  return (
+    normalized === "order online" ||
+    normalized === "menu" ||
+    normalized === "online ordering" ||
+    normalized === "start order" ||
+    normalized === "pickup" ||
+    normalized === "delivery"
+  );
+}
+
 function normalizedFingerprint(text: string) {
   return tokenize(text).slice(0, 16).join(" ");
 }
 
 function resultQualityScore(result: SearchResult) {
   let score = 0;
-  if (!looksLikeGarbageText(result.itemName)) score += 10;
+  if (!looksLikeGarbageText(result.itemName) && !looksLikeGenericItemName(result.itemName)) score += 10;
   if (result.description && !looksLikeGarbageText(result.description)) score += 6;
   if (result.itemName.split(" ").length <= 6) score += 4;
   if (result.itemName.length > 0 && result.itemName.length <= 50) score += 3;
   if (result.description && result.description !== "No description available.") score += 2;
   return score;
+}
+
+function resultsLookLikeSameDish(a: SearchResult, b: SearchResult) {
+  if (normalize(a.address) !== normalize(b.address)) return false;
+  if (a.price !== b.price) return false;
+
+  const aTitle = normalizedFingerprint(a.itemName);
+  const bTitle = normalizedFingerprint(b.itemName);
+  const aDescription = normalizedFingerprint(a.description || "");
+  const bDescription = normalizedFingerprint(b.description || "");
+
+  if (aTitle && bTitle && aTitle === bTitle) return true;
+  if (aTitle && bDescription && aTitle === bDescription) return true;
+  if (bTitle && aDescription && bTitle === aDescription) return true;
+
+  return false;
 }
 
 function deriveItemNameAndDescription(raw: string, dishQuery: string, currentHeading: string) {
@@ -1051,9 +1079,20 @@ export async function POST(req: NextRequest) {
         ? result.description
         : result.itemName;
       const key = `${normalize(result.address)}|${result.price}|${normalizedFingerprint(baseText)}`;
-      const existing = dedupedResults.get(key);
-      if (!existing || resultQualityScore(result) > resultQualityScore(existing)) {
+      const directExisting = dedupedResults.get(key);
+      if (!directExisting || resultQualityScore(result) > resultQualityScore(directExisting)) {
         dedupedResults.set(key, result);
+      }
+
+      for (const [existingKey, existing] of dedupedResults.entries()) {
+        if (existingKey === key) continue;
+        if (!resultsLookLikeSameDish(existing, result)) continue;
+
+        if (resultQualityScore(result) > resultQualityScore(existing)) {
+          dedupedResults.delete(existingKey);
+          dedupedResults.set(key, result);
+        }
+        break;
       }
     }
 
