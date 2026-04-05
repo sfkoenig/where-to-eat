@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v43";
+const CACHE_VERSION = "v44";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -440,6 +440,17 @@ function queryMatchesContext(query: string, primaryText: string, contextText: st
     }
     return primaryForms.has(token) || contextForms.has(token);
   });
+}
+
+function coreHeadToken(query: string) {
+  const { coreTokens } = parseQueryIntent(query);
+  return coreTokens[coreTokens.length - 1] || "";
+}
+
+function textHasHeadToken(text: string, query: string) {
+  const headToken = coreHeadToken(query);
+  if (!headToken) return true;
+  return buildTokenForms(text).has(headToken);
 }
 
 function likelyCategoryLabel(line: string) {
@@ -869,7 +880,10 @@ function mergeResultDetails(base: SearchResult, candidate: SearchResult) {
 }
 
 function deriveItemNameAndDescription(raw: string, dishQuery: string, currentHeading: string) {
-  const cleaned = cleanDisplayText(raw).replace(/\s*\$\s?\d{1,3}(?:\.\d{2})?\s*/g, " ").trim();
+  const cleaned = cleanDisplayText(raw)
+    .replace(/\s*\$\s?\d{1,3}(?:\.\d{2})?\s*/g, " ")
+    .replace(/[“”]/g, '"')
+    .trim();
   const intent = parseQueryIntent(dishQuery);
 
   let splitIndex = -1;
@@ -884,14 +898,35 @@ function deriveItemNameAndDescription(raw: string, dishQuery: string, currentHea
   let itemName = cleaned;
   let description = "";
 
-  if (splitIndex > 0 && splitIndex < cleaned.length) {
+  const quoteIndex = cleaned.indexOf('"');
+  if (quoteIndex > 0) {
+    itemName = cleaned.slice(0, quoteIndex).trim();
+    description = cleaned
+      .slice(quoteIndex + 1)
+      .replace(/^["\s,:.-]+/, "")
+      .replace(/["]+/g, " ")
+      .trim();
+  }
+
+  if (!description && splitIndex > 0 && splitIndex < cleaned.length) {
     itemName = cleaned.slice(0, splitIndex).trim();
     description = cleaned.slice(splitIndex).replace(/^[\s,:.-]+/, "").trim();
+  }
+
+  if (!description) {
+    const repeatedTail = new RegExp(`^(${itemName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})(?:\\s+\\1)+$`, "i");
+    if (repeatedTail.test(cleaned)) {
+      itemName = cleaned.slice(0, itemName.length).trim();
+      description = "";
+    }
   }
 
   if (!itemName || itemName.startsWith("$")) {
     itemName = "";
   }
+
+  itemName = itemName.replace(/["]+/g, "").trim();
+  description = description.replace(/["]+/g, "").trim();
 
   if (!description && currentHeading) {
     description = `Section: ${cleanDisplayText(currentHeading)}`;
@@ -925,16 +960,22 @@ function extractMenuHitsFromHtml(html: string, dishQuery: string, sourceUrl: str
     if (looksLikeModifierPriceContext(raw)) return;
     if (likelyCategoryLabel(normalized)) return;
 
-    const lineMatches = queryMatchesText(dishQuery, raw);
-    const headingMatches = currentHeading ? queryMatchesText(dishQuery, currentHeading) : false;
-    if (!lineMatches && !headingMatches) return;
-
     const { itemName, description, cleaned } = deriveItemNameAndDescription(raw, dishQuery, currentHeading);
     if (!itemName) return;
     if (looksLikeGarbageText(itemName) || looksLikeGarbageText(description) || looksLikeGarbageText(cleaned)) {
       return;
     }
     if (likelyCategoryLabel(itemName)) return;
+
+    const itemMatches = queryMatchesText(dishQuery, itemName);
+    const headingMatches = currentHeading ? queryMatchesText(dishQuery, currentHeading) : false;
+    const sectionSupportedMatch =
+      headingMatches &&
+      textHasHeadToken(itemName, dishQuery) &&
+      queryMatchesContext(dishQuery, itemName, `${description} ${currentHeading}`);
+
+    if (!itemMatches && !sectionSupportedMatch) return;
+
     if (
       queryIntent.dietaryTokens.length > 0 &&
       !isVegetarianCompatible(`${currentHeading} ${itemName} ${description} ${cleaned}`)
@@ -943,7 +984,7 @@ function extractMenuHitsFromHtml(html: string, dishQuery: string, sourceUrl: str
     }
 
     const price = priceMatches[0].replace(/\s+/g, "");
-    const itemText = headingMatches && !lineMatches ? `${cleaned} (${currentHeading})` : cleaned;
+    const itemText = sectionSupportedMatch && !itemMatches ? `${cleaned} (${currentHeading})` : cleaned;
     const key = `${normalize(itemText)}|${price}`;
     if (seen.has(key)) return;
     seen.add(key);
