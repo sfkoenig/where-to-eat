@@ -49,8 +49,8 @@ type SearchResponsePayload = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v23";
-const FETCH_TIMEOUT_MS = 8000;
+const CACHE_VERSION = "v24";
+const FETCH_TIMEOUT_MS = 5000;
 const SITE_CHECK_BATCH_SIZE = 4;
 const MAX_CANDIDATE_RESTAURANTS = 15;
 
@@ -1090,7 +1090,7 @@ export async function POST(req: NextRequest) {
     const firstPassPlaces = crawlablePlaces.slice(0, MAX_CANDIDATE_RESTAURANTS);
     let results: SearchResult[] = await collectResultsForPlaces(firstPassPlaces, dish, center);
 
-    if (results.length < 8 && crawlablePlaces.length > MAX_CANDIDATE_RESTAURANTS) {
+    if (results.length === 0 && crawlablePlaces.length > MAX_CANDIDATE_RESTAURANTS) {
       const overflowPlaces = crawlablePlaces.slice(MAX_CANDIDATE_RESTAURANTS);
       const overflowResults = await collectResultsForPlaces(overflowPlaces, dish, center);
       results = [...results, ...overflowResults];

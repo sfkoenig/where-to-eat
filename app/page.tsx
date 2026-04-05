@@ -66,7 +66,15 @@ export default function HomePage() {
         body: JSON.stringify({ dish, address: expandAddressShortcut(address), radiusMiles }),
       });
 
-      const data: SearchResponse = await res.json();
+      const raw = await res.text();
+      let data: SearchResponse = {};
+
+      try {
+        data = raw ? (JSON.parse(raw) as SearchResponse) : {};
+      } catch {
+        throw new Error(res.ok ? "Search failed" : "Search timed out. Try again or reduce the radius.");
+      }
+
       if (!res.ok) throw new Error(data.error || "Search failed");
 
       setResults(data.results || []);
