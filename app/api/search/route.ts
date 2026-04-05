@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v36";
+const CACHE_VERSION = "v37";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -556,6 +556,18 @@ function looksLikeGenericItemName(text: string) {
   );
 }
 
+function looksLikeMetadataText(text: string) {
+  const normalized = normalize(text);
+  return (
+    normalized.includes(" photos ") ||
+    normalized.includes(" reviews ") ||
+    /^\d+\s+photos\b/.test(normalized) ||
+    /^\d+\s+reviews\b/.test(normalized) ||
+    normalized.includes(" photo ") ||
+    normalized.includes(" review ")
+  );
+}
+
 function normalizedFingerprint(text: string) {
   return tokenize(text).slice(0, 16).join(" ");
 }
@@ -602,7 +614,9 @@ function deriveDescriptionFromItemText(itemName: string, itemText: string) {
       suffix &&
       !isPriceOnlyText(suffix) &&
       !looksLikeGarbageText(suffix) &&
-      !looksLikeGenericItemName(suffix)
+      !looksLikeGenericItemName(suffix) &&
+      !looksLikeMetadataText(suffix) &&
+      normalize(suffix) !== normalizedItemName
     ) {
       return suffix;
     }
@@ -617,7 +631,9 @@ function finalizedDescription(hit: MenuHit) {
     explicit &&
     !isPriceOnlyText(explicit) &&
     !looksLikeGarbageText(explicit) &&
-    !looksLikeGenericItemName(explicit)
+    !looksLikeGenericItemName(explicit) &&
+    !looksLikeMetadataText(explicit) &&
+    normalize(explicit) !== normalize(hit.itemName)
   ) {
     return explicit;
   }
@@ -645,10 +661,6 @@ function mergeResultDetails(base: SearchResult, candidate: SearchResult) {
   }
 
   return merged;
-}
-
-function resultGroupKey(result: SearchResult, dish: string) {
-  return `${normalize(result.address)}|${canonicalItemKey(dish)}`;
 }
 
 function deriveItemNameAndDescription(raw: string, dishQuery: string, currentHeading: string) {
@@ -1780,7 +1792,7 @@ export async function POST(req: NextRequest) {
 
     const groupedResults = new Map<string, SearchResult>();
     for (const result of dedupedResults.values()) {
-      const groupKey = resultGroupKey(result, dish);
+      const groupKey = `${normalize(result.address)}|${canonicalItemKey(result.itemName)}`;
       const existing = groupedResults.get(groupKey);
       if (!existing) {
         groupedResults.set(groupKey, result);
@@ -1800,7 +1812,23 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const finalResults = Array.from(groupedResults.values())
+    const enrichedGroupedResults = Array.from(groupedResults.values()).map((result) => {
+      const hasDescription =
+        Boolean(result.description) && result.description !== "No description available.";
+      if (hasDescription) return result;
+
+      const candidate = filteredResults.find((other) => {
+        if (other === result) return false;
+        if (normalize(other.address) !== normalize(result.address)) return false;
+        if (!other.description || other.description === "No description available.") return false;
+        if (!queryMatchesText(dish, other.itemName)) return false;
+        return true;
+      });
+
+      return candidate ? mergeResultDetails(result, candidate) : result;
+    });
+
+    const finalResults = enrichedGroupedResults
         .sort((a, b) => {
           const priceDifference = numericPrice(a.price) - numericPrice(b.price);
           if (priceDifference !== 0) return priceDifference;
