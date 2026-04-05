@@ -49,7 +49,7 @@ type SearchResponsePayload = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v19";
+const CACHE_VERSION = "v20";
 const FETCH_TIMEOUT_MS = 8000;
 const SITE_CHECK_BATCH_SIZE = 4;
 const MAX_CANDIDATE_RESTAURANTS = 15;
@@ -319,6 +319,32 @@ function cleanDisplayText(text: string) {
     .trim();
 }
 
+function looksLikeGarbageText(text: string) {
+  const normalized = normalize(text);
+  return (
+    normalized.startsWith("#block-") ||
+    normalized.includes("sqs-block") ||
+    normalized.includes("--") ||
+    normalized.includes("{") ||
+    normalized.includes("}") ||
+    /yui[_-]\d/i.test(text)
+  );
+}
+
+function normalizedFingerprint(text: string) {
+  return tokenize(text).slice(0, 16).join(" ");
+}
+
+function resultQualityScore(result: SearchResult) {
+  let score = 0;
+  if (!looksLikeGarbageText(result.itemName)) score += 10;
+  if (result.description && !looksLikeGarbageText(result.description)) score += 6;
+  if (result.itemName.split(" ").length <= 6) score += 4;
+  if (result.itemName.length > 0 && result.itemName.length <= 50) score += 3;
+  if (result.description && result.description !== "No description available.") score += 2;
+  return score;
+}
+
 function deriveItemNameAndDescription(raw: string, dishQuery: string, currentHeading: string) {
   const cleaned = cleanDisplayText(raw).replace(/\s*\$\s?\d{1,3}(?:\.\d{2})?\s*/g, " ").trim();
   const intent = parseQueryIntent(dishQuery);
@@ -380,6 +406,9 @@ function extractMenuHitsFromHtml(html: string, dishQuery: string, sourceUrl: str
 
     const { itemName, description, cleaned } = deriveItemNameAndDescription(raw, dishQuery, currentHeading);
     if (!itemName) return;
+    if (looksLikeGarbageText(itemName) || looksLikeGarbageText(description) || looksLikeGarbageText(cleaned)) {
+      return;
+    }
     if (likelyCategoryLabel(itemName)) return;
     if (
       queryIntent.dietaryTokens.length > 0 &&
@@ -467,6 +496,7 @@ function parseSequentialMenuHits(html: string, dishQuery: string, sourceUrl: str
     const description = nextNextLine && !/^\d{1,2}(?:\.\d{2})?$/.test(nextNextLine) ? nextNextLine : "";
 
     if (!itemName || likelyCategoryLabel(itemName)) continue;
+    if (looksLikeGarbageText(itemName) || looksLikeGarbageText(description)) continue;
     if (
       queryIntent.dietaryTokens.length > 0 &&
       !isVegetarianCompatible(`${currentHeading} ${itemName} ${description}`)
@@ -536,6 +566,9 @@ function parseForwardPriceMenuHits(html: string, dishQuery: string, sourceUrl: s
     const description = detailLines.join(" ").trim();
 
     if (!line || likelyCategoryLabel(line)) continue;
+    if (looksLikeGarbageText(line) || looksLikeGarbageText(description) || looksLikeGarbageText(blockText)) {
+      continue;
+    }
     if (
       queryIntent.dietaryTokens.length > 0 &&
       !isVegetarianCompatible(`${currentHeading} ${line} ${description}`)
@@ -612,6 +645,9 @@ function parseLittleChihuahuaMenu(html: string, dishQuery: string, sourceUrl: st
     const combined = `${itemName} ${description}`.trim();
 
     if (!itemName) continue;
+    if (looksLikeGarbageText(itemName) || looksLikeGarbageText(description) || looksLikeGarbageText(combined)) {
+      continue;
+    }
     if (!queryMatchesContext(dishQuery, combined, "burrito vegetarian vegan veggie")) continue;
 
     const key = `${normalize(itemName)}|${price}`;
@@ -1011,9 +1047,12 @@ export async function POST(req: NextRequest) {
 
     const dedupedResults = new Map<string, SearchResult>();
     for (const result of filteredResults) {
-      const key = `${normalize(result.address)}|${normalize(result.itemName)}|${result.price}`;
+      const baseText = result.description && result.description !== "No description available."
+        ? result.description
+        : result.itemName;
+      const key = `${normalize(result.address)}|${result.price}|${normalizedFingerprint(baseText)}`;
       const existing = dedupedResults.get(key);
-      if (!existing || (result.rating ?? 0) > (existing.rating ?? 0)) {
+      if (!existing || resultQualityScore(result) > resultQualityScore(existing)) {
         dedupedResults.set(key, result);
       }
     }
