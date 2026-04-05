@@ -49,7 +49,7 @@ type SearchResponsePayload = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v17";
+const CACHE_VERSION = "v18";
 const FETCH_TIMEOUT_MS = 8000;
 const SITE_CHECK_BATCH_SIZE = 4;
 const MAX_CANDIDATE_RESTAURANTS = 15;
@@ -756,6 +756,11 @@ function numericPrice(price: string) {
   return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
 }
 
+function withinRadius(distance: number | undefined, radiusMiles: number) {
+  if (typeof distance !== "number" || Number.isNaN(distance)) return false;
+  return distance <= radiusMiles;
+}
+
 async function chunkedMap<T, R>(
   items: T[],
   batchSize: number,
@@ -926,7 +931,12 @@ export async function POST(req: NextRequest) {
 
     const results: SearchResult[] = placeResults.flat();
 
-    const filteredResults = results.filter((result) => shouldKeepResultForQuery(result, dish));
+    const requestedRadiusMiles = Number(radiusMiles || 1);
+    const filteredResults = results.filter(
+      (result) =>
+        shouldKeepResultForQuery(result, dish) &&
+        withinRadius(result.distanceMiles, requestedRadiusMiles)
+    );
 
     const dedupedResults = new Map<string, SearchResult>();
     for (const result of filteredResults) {
