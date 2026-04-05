@@ -632,6 +632,21 @@ function canonicalItemKey(itemName: string) {
     .trim();
 }
 
+function mergeResultDetails(base: SearchResult, candidate: SearchResult) {
+  const merged = { ...base };
+
+  const baseHasDescription =
+    Boolean(base.description) && base.description !== "No description available.";
+  const candidateHasDescription =
+    Boolean(candidate.description) && candidate.description !== "No description available.";
+
+  if (!baseHasDescription && candidateHasDescription) {
+    merged.description = candidate.description;
+  }
+
+  return merged;
+}
+
 function deriveItemNameAndDescription(raw: string, dishQuery: string, currentHeading: string) {
   const cleaned = cleanDisplayText(raw).replace(/\s*\$\s?\d{1,3}(?:\.\d{2})?\s*/g, " ").trim();
   const intent = parseQueryIntent(dishQuery);
@@ -1768,13 +1783,16 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
+      const mergedExisting = mergeResultDetails(existing, result);
       const resultScore = resultQualityScore(result);
       const existingScore = resultQualityScore(existing);
       if (
         resultScore > existingScore ||
         (resultScore === existingScore && numericPrice(result.price) < numericPrice(existing.price))
       ) {
-        groupedResults.set(groupKey, result);
+        groupedResults.set(groupKey, mergeResultDetails(result, existing));
+      } else {
+        groupedResults.set(groupKey, mergedExisting);
       }
     }
 
