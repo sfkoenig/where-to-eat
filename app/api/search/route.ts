@@ -391,6 +391,11 @@ function likelyCategoryLabel(line: string) {
   return bad.includes(l);
 }
 
+function isSeparatorLine(line: string) {
+  const normalized = cleanDisplayText(line);
+  return /^([*•·-]\s*){2,}$/.test(normalized) || normalized === "* * *";
+}
+
 function cleanDisplayText(text: string) {
   return text
     .replace(/([a-z])([A-Z])/g, "$1 $2")
@@ -494,6 +499,7 @@ function extractMenuHitsFromHtml(html: string, dishQuery: string, sourceUrl: str
   $("h1, h2, h3, h4, h5, h6, article, section, li, p, div, span, td").each((_, el) => {
     const raw = $(el).text().replace(/\s+/g, " ").trim();
     if (!raw || raw.length < 2 || raw.length > 360) return;
+    if (isSeparatorLine(raw)) return;
 
     const tag = el.tagName?.toLowerCase() || "";
     const normalized = normalize(raw);
@@ -566,6 +572,8 @@ function parseSequentialMenuHits(html: string, dishQuery: string, sourceUrl: str
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     const normalized = normalize(line);
+
+    if (isSeparatorLine(line)) continue;
 
     if (likelyCategoryLabel(normalized)) {
       currentHeading = normalized;
@@ -659,13 +667,21 @@ function parseForwardPriceMenuHits(html: string, dishQuery: string, sourceUrl: s
     if (isPriceOnlyText(line)) continue;
     if (looksLikeGarbageText(line) || looksLikeGenericItemName(line)) continue;
 
-    const nextLines = lines.slice(i + 1, i + 5);
+    const nextLines = lines
+      .slice(i + 1, i + 9)
+      .filter((candidate) => !isSeparatorLine(candidate));
     const priceLine = nextLines.find((candidate) => /^\$?\d{1,2}(?:\.\d{2})?$/.test(candidate));
     if (!priceLine) continue;
 
     const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
     const priceIndex = nextLines.indexOf(priceLine);
-    const detailLines = nextLines.slice(0, priceIndex).filter((candidate) => !candidate.startsWith("$"));
+    const detailLines = nextLines
+      .slice(0, priceIndex)
+      .filter(
+        (candidate) =>
+          !candidate.startsWith("$") &&
+          !/^(small|large|tofu\s*\/\s*veggies|chicken or pork|beef|shrimp)$/i.test(candidate)
+      );
     const description = detailLines.join(" ").trim();
     const relevantBlock = [line, description].filter(Boolean).join(" ").trim();
 
