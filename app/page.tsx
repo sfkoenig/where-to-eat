@@ -22,6 +22,13 @@ type SearchResponse = {
   results?: Result[];
   note?: string;
   error?: string;
+  diagnostics?: {
+    totalPlaces: number;
+    enrichedPlaces: number;
+    crawlablePlaces: number;
+    checkedPlaces: number;
+    lines: string[];
+  };
 };
 
 function mapEmbedUrl(result: Result | undefined) {
@@ -37,6 +44,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
+  const [diagnostics, setDiagnostics] = useState<SearchResponse["diagnostics"]>();
   const [results, setResults] = useState<Result[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
@@ -56,6 +64,7 @@ export default function HomePage() {
     setLoading(true);
     setError("");
     setNote("");
+    setDiagnostics(undefined);
     setResults([]);
     setSelectedIndex(0);
 
@@ -79,6 +88,7 @@ export default function HomePage() {
 
       setResults(data.results || []);
       setNote(data.note || "");
+      setDiagnostics(data.diagnostics);
       setSelectedIndex(0);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -281,6 +291,23 @@ export default function HomePage() {
             ) : null}
 
             {note ? <p style={{ margin: "0 0 16px", color: "#64574a" }}>{note}</p> : null}
+
+            {diagnostics ? (
+              <details style={{ margin: "0 0 16px" }}>
+                <summary style={{ cursor: "pointer", fontWeight: 700 }}>Search diagnostics</summary>
+                <div style={{ marginTop: 10, color: "#51473d", lineHeight: 1.5 }}>
+                  <p style={{ margin: "0 0 10px" }}>
+                    Places returned: {diagnostics.totalPlaces} • Enriched: {diagnostics.enrichedPlaces} •
+                    Crawlable: {diagnostics.crawlablePlaces} • First-pass checked: {diagnostics.checkedPlaces}
+                  </p>
+                  <ul style={{ margin: 0, paddingLeft: 20 }}>
+                    {diagnostics.lines.map((line) => (
+                      <li key={line}>{line}</li>
+                    ))}
+                  </ul>
+                </div>
+              </details>
+            ) : null}
 
             <div style={{ display: "grid", gap: 14 }}>
               {results.map((r, i) => (

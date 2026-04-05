@@ -47,6 +47,13 @@ type SearchResponsePayload = {
   results: SearchResult[];
   note: string;
   cachedAt?: string;
+  diagnostics?: {
+    totalPlaces: number;
+    enrichedPlaces: number;
+    crawlablePlaces: number;
+    checkedPlaces: number;
+    lines: string[];
+  };
 };
 
 type KnownRestaurantFallback = {
@@ -1099,6 +1106,10 @@ async function collectResultsForPlaces(
   return placeResults.flat();
 }
 
+function placeLabel(place: Place) {
+  return place.displayName?.text || place.formattedAddress || "Unknown";
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { dish, address, radiusMiles } = await req.json();
@@ -1310,8 +1321,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const responsePayload: SearchResponsePayload = {
-      results: Array.from(dedupedResults.values())
+    const finalResults = Array.from(dedupedResults.values())
         .sort((a, b) => {
           const priceDifference = numericPrice(a.price) - numericPrice(b.price);
           if (priceDifference !== 0) return priceDifference;
@@ -1320,9 +1330,40 @@ export async function POST(req: NextRequest) {
           const bDistance = b.distanceMiles ?? Number.POSITIVE_INFINITY;
           return aDistance - bDistance;
         })
-        .slice(0, 100),
+        .slice(0, 100);
+
+    const checkedPlaces = results.map((result) => normalize(result.restaurantName));
+    const diagnosticsLines = enrichedPlaces.slice(0, 20).map((place) => {
+      const label = placeLabel(place);
+      const normalizedLabel = normalize(label);
+      const hasWebsite = Boolean(place.websiteUri);
+      const inFirstPass = firstPassPlaces.some(
+        (candidate) => normalize(placeLabel(candidate)) === normalizedLabel
+      );
+      const producedHit = checkedPlaces.includes(normalizedLabel);
+      return `${label}: website=${hasWebsite ? "yes" : "no"}, first_pass=${inFirstPass ? "yes" : "no"}, matched=${producedHit ? "yes" : "no"}`;
+    });
+
+    for (const fallback of applicableFallbacks) {
+      const fallbackMatched = finalResults.some(
+        (result) => normalize(result.restaurantName) === normalize(fallback.restaurantName)
+      );
+      diagnosticsLines.push(
+        `${fallback.restaurantName} [fallback]: in_radius=yes, matched=${fallbackMatched ? "yes" : "no"}`
+      );
+    }
+
+    const responsePayload: SearchResponsePayload = {
+      results: finalResults,
       note:
         "Results come from restaurant websites or ordering pages. Section matches like Burritos or Burgers can now return the priced items listed underneath.",
+      diagnostics: {
+        totalPlaces: places.length,
+        enrichedPlaces: enrichedPlaces.length,
+        crawlablePlaces: crawlablePlaces.length,
+        checkedPlaces: firstPassPlaces.length,
+        lines: diagnosticsLines,
+      },
     };
 
     await setCachedValue(searchCacheKey, responsePayload);
