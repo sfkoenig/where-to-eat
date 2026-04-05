@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v40";
+const CACHE_VERSION = "v41";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -1328,6 +1328,10 @@ function knownOrderingLinksForWebsite(websiteUrl: string) {
     return [
       "https://order.toasttab.com/online/khob-khun-thai-cuisine-breakfast-3741-geary-blvd",
     ];
+  }
+
+  if (normalizedWebsite.includes("thaitimesf.com")) {
+    return ["https://thaitime.toast.site/order"];
   }
 
   return [];
