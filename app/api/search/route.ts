@@ -49,7 +49,7 @@ type SearchResponsePayload = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v18";
+const CACHE_VERSION = "v19";
 const FETCH_TIMEOUT_MS = 8000;
 const SITE_CHECK_BATCH_SIZE = 4;
 const MAX_CANDIDATE_RESTAURANTS = 15;
@@ -497,6 +497,74 @@ function parseSequentialMenuHits(html: string, dishQuery: string, sourceUrl: str
   return hits;
 }
 
+function parseForwardPriceMenuHits(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
+  const $ = cheerio.load(html);
+  const queryIntent = parseQueryIntent(dishQuery);
+  const lines = $("body")
+    .text()
+    .split("\n")
+    .map((line) => cleanDisplayText(line))
+    .filter((line) => line.length > 1 && line.length < 240);
+
+  const hits: MenuHit[] = [];
+  const seen = new Set<string>();
+  let currentHeading = "";
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const normalized = normalize(line);
+
+    if (likelyCategoryLabel(normalized)) {
+      currentHeading = normalized;
+      continue;
+    }
+
+    const nextLines = lines.slice(i + 1, i + 5);
+    const priceLine = nextLines.find((candidate) => /^\$?\d{1,2}(?:\.\d{2})?$/.test(candidate));
+    if (!priceLine) continue;
+
+    const blockText = [line, ...nextLines].join(" ");
+    const lineMatches =
+      queryMatchesText(dishQuery, line) ||
+      queryMatchesText(dishQuery, blockText) ||
+      queryMatchesContext(dishQuery, blockText, currentHeading);
+    if (!lineMatches) continue;
+
+    const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
+    const priceIndex = nextLines.indexOf(priceLine);
+    const detailLines = nextLines.slice(0, priceIndex).filter((candidate) => !candidate.startsWith("$"));
+    const description = detailLines.join(" ").trim();
+
+    if (!line || likelyCategoryLabel(line)) continue;
+    if (
+      queryIntent.dietaryTokens.length > 0 &&
+      !isVegetarianCompatible(`${currentHeading} ${line} ${description}`)
+    ) {
+      continue;
+    }
+
+    const key = `${normalize(line)}|${price}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    hits.push({
+      itemName: line,
+      description,
+      itemText: `${line} ${description}`.trim(),
+      price,
+      sourceUrl,
+      sourceType:
+        sourceUrl.includes("toasttab.com")
+          ? "toast_ordering"
+          : sourceUrl.includes("spoton.com")
+            ? "spoton_ordering"
+            : "website_or_ordering_page",
+    });
+  }
+
+  return hits;
+}
+
 function sortLinksByPriority(links: string[]) {
   const priority = (link: string) => {
     const lower = link.toLowerCase();
@@ -657,6 +725,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
   // Try homepage
   allHits.push(...extractMenuHitsFromHtml(homeHtml, dish, websiteUrl));
   allHits.push(...parseSequentialMenuHits(homeHtml, dish, websiteUrl));
+  allHits.push(...parseForwardPriceMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseLittleChihuahuaMenu(homeHtml, dish, websiteUrl));
 
   // Try menu/order links (Toast/Slice/etc)
@@ -669,6 +738,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
     if (!html) continue;
     allHits.push(...extractMenuHitsFromHtml(html, dish, link));
     allHits.push(...parseSequentialMenuHits(html, dish, link));
+    allHits.push(...parseForwardPriceMenuHits(html, dish, link));
     allHits.push(...parseLittleChihuahuaMenu(html, dish, link));
 
     // One more level deep for category links like ?category=Vegetarian+Burritos
@@ -681,6 +751,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
       if (!nestedHtml) continue;
       allHits.push(...extractMenuHitsFromHtml(nestedHtml, dish, nestedLink));
       allHits.push(...parseSequentialMenuHits(nestedHtml, dish, nestedLink));
+      allHits.push(...parseForwardPriceMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseLittleChihuahuaMenu(nestedHtml, dish, nestedLink));
     }
   }
