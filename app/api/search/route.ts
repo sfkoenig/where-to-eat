@@ -647,6 +647,10 @@ function mergeResultDetails(base: SearchResult, candidate: SearchResult) {
   return merged;
 }
 
+function resultGroupKey(result: SearchResult, dish: string) {
+  return `${normalize(result.address)}|${canonicalItemKey(dish)}`;
+}
+
 function deriveItemNameAndDescription(raw: string, dishQuery: string, currentHeading: string) {
   const cleaned = cleanDisplayText(raw).replace(/\s*\$\s?\d{1,3}(?:\.\d{2})?\s*/g, " ").trim();
   const intent = parseQueryIntent(dishQuery);
@@ -1776,7 +1780,7 @@ export async function POST(req: NextRequest) {
 
     const groupedResults = new Map<string, SearchResult>();
     for (const result of dedupedResults.values()) {
-      const groupKey = `${normalize(result.address)}|${canonicalItemKey(result.itemName)}`;
+      const groupKey = resultGroupKey(result, dish);
       const existing = groupedResults.get(groupKey);
       if (!existing) {
         groupedResults.set(groupKey, result);
