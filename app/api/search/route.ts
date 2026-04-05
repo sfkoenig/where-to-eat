@@ -17,6 +17,7 @@ type QueryIntent = {
 };
 
 type Place = {
+  id?: string;
   displayName?: { text?: string };
   formattedAddress?: string;
   rating?: number;
@@ -877,6 +878,28 @@ async function geocodeAddress(address: string, apiKey: string) {
   return location;
 }
 
+async function enrichPlace(place: Place, apiKey: string) {
+  if (place.websiteUri || !place.id) return place;
+
+  const cacheKey = `${CACHE_VERSION}:place:${place.id}`;
+  const cached = await getCachedValue<Place>(cacheKey, CACHE_DAYS);
+  if (cached) return { ...place, ...cached.value };
+
+  const res = await fetch(`https://places.googleapis.com/v1/places/${place.id}`, {
+    headers: {
+      "X-Goog-Api-Key": apiKey,
+      "X-Goog-FieldMask":
+        "id,displayName,formattedAddress,rating,currentOpeningHours.openNow,websiteUri,googleMapsUri,location",
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) return place;
+  const details = (await res.json()) as Place;
+  await setCachedValue(cacheKey, details);
+  return { ...place, ...details };
+}
+
 function distanceMiles(
   startLat: number,
   startLng: number,
@@ -1008,7 +1031,7 @@ export async function POST(req: NextRequest) {
       places = cachedPlaces.value;
     } else {
       const fieldMask =
-        "places.displayName,places.formattedAddress,places.rating,places.currentOpeningHours.openNow,places.websiteUri,places.googleMapsUri,places.location";
+        "places.id,places.displayName,places.formattedAddress,places.rating,places.currentOpeningHours.openNow,places.websiteUri,places.googleMapsUri,places.location";
 
       const nearbyRes = await fetch("https://places.googleapis.com/v1/places:searchNearby", {
         method: "POST",
@@ -1086,7 +1109,11 @@ export async function POST(req: NextRequest) {
       await setCachedValue(placesCacheKey, places);
     }
 
-    const crawlablePlaces = places.filter((p) => p.websiteUri);
+    const enrichedPlaces = await chunkedMap(places, SITE_CHECK_BATCH_SIZE, async (place) =>
+      enrichPlace(place, apiKey)
+    );
+
+    const crawlablePlaces = enrichedPlaces.filter((p) => p.websiteUri);
     const firstPassPlaces = crawlablePlaces.slice(0, MAX_CANDIDATE_RESTAURANTS);
     let results: SearchResult[] = await collectResultsForPlaces(firstPassPlaces, dish, center);
 
