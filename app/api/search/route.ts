@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v37";
+const CACHE_VERSION = "v38";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -519,6 +519,50 @@ function parseLocalBlockMenuHits(html: string, dishQuery: string, sourceUrl: str
           : sourceUrl.includes("spoton.com")
             ? "spoton_ordering"
             : "website_or_ordering_page",
+    });
+  });
+
+  return hits;
+}
+
+function parseStructuredVariantMenuHits(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
+  const $ = cheerio.load(html);
+  const hits: MenuHit[] = [];
+  const seen = new Set<string>();
+
+  $('[data-hook="item.description"]').each((_, el) => {
+    const description = cleanDisplayText($(el).text());
+    const titleText = cleanDisplayText($(el).prevAll().first().text());
+    const variants = $(el).nextAll('[data-hook="item.priceVariants"]').first();
+
+    if (!titleText || !variants.length) return;
+    if (!queryMatchesText(dishQuery, titleText)) return;
+    if (looksLikeGarbageText(titleText) || looksLikeGenericItemName(titleText)) return;
+
+    variants.find('[data-hook="item.variant"]').each((__, variantEl) => {
+      const variantName = cleanDisplayText($(variantEl).find('[data-hook="variant.name"]').first().text());
+      const variantPrice = cleanDisplayText($(variantEl).find('[data-hook="variant.price"]').first().text());
+      if (!variantPrice || !/^\$?\d{1,3}(?:\.\d{2})?$/.test(variantPrice)) return;
+
+      const itemName = variantName ? `${titleText} (${variantName})` : titleText;
+      const price = variantPrice.startsWith("$") ? variantPrice : `$${variantPrice}`;
+      const key = `${normalize(itemName)}|${price}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      hits.push({
+        itemName,
+        description,
+        itemText: [itemName, description].filter(Boolean).join(" "),
+        price,
+        sourceUrl,
+        sourceType:
+          sourceUrl.includes("toasttab.com")
+            ? "toast_ordering"
+            : sourceUrl.includes("spoton.com")
+              ? "spoton_ordering"
+              : "website_or_ordering_page",
+      });
     });
   });
 
@@ -1327,6 +1371,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
 
   // Try homepage
   allHits.push(...parseHiddenInputMenuHits(homeHtml, dish, websiteUrl));
+  allHits.push(...parseStructuredVariantMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...extractMenuHitsFromHtml(homeHtml, dish, websiteUrl));
   allHits.push(...parseLocalBlockMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseSequentialMenuHits(homeHtml, dish, websiteUrl));
@@ -1347,6 +1392,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
     const html = await fetchText(link);
     if (!html) continue;
     allHits.push(...parseHiddenInputMenuHits(html, dish, link));
+    allHits.push(...parseStructuredVariantMenuHits(html, dish, link));
     allHits.push(...extractMenuHitsFromHtml(html, dish, link));
     allHits.push(...parseLocalBlockMenuHits(html, dish, link));
     allHits.push(...parseSequentialMenuHits(html, dish, link));
@@ -1364,6 +1410,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
       const nestedHtml = await fetchText(nestedLink);
       if (!nestedHtml) continue;
       allHits.push(...parseHiddenInputMenuHits(nestedHtml, dish, nestedLink));
+      allHits.push(...parseStructuredVariantMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...extractMenuHitsFromHtml(nestedHtml, dish, nestedLink));
       allHits.push(...parseLocalBlockMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseSequentialMenuHits(nestedHtml, dish, nestedLink));
