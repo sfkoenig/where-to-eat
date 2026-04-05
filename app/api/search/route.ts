@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v38";
+const CACHE_VERSION = "v39";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -563,6 +563,70 @@ function parseStructuredVariantMenuHits(html: string, dishQuery: string, sourceU
               ? "spoton_ordering"
               : "website_or_ordering_page",
       });
+    });
+  });
+
+  return hits;
+}
+
+function parseWixRichTextMenuHits(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
+  const $ = cheerio.load(html);
+  const hits: MenuHit[] = [];
+  const seen = new Set<string>();
+
+  $("h1, h2, h3, h4, h5").each((_, el) => {
+    const titleText = cleanDisplayText($(el).text());
+    if (!titleText) return;
+    if (!queryMatchesText(dishQuery, titleText)) return;
+    if (looksLikeGarbageText(titleText) || looksLikeGenericItemName(titleText)) return;
+
+    const priceMatch = titleText.match(/\$\s?\d{1,3}(?:\.\d{2})?/);
+    const itemName = cleanDisplayText(titleText.replace(/\$\s?\d{1,3}(?:\.\d{2})?/g, " "));
+    if (!itemName) return;
+
+    let price = priceMatch?.[0]?.replace(/\s+/g, "");
+    if (!price) {
+      const nearbyPrice = cleanDisplayText($(el).find("span").last().text());
+      if (/^\$?\d{1,3}(?:\.\d{2})?$/.test(nearbyPrice)) {
+        price = nearbyPrice.startsWith("$") ? nearbyPrice : `$${nearbyPrice}`;
+      }
+    }
+    if (!price) return;
+
+    const descriptionParts: string[] = [];
+    $(el)
+      .nextAll("h6")
+      .slice(0, 3)
+      .each((__, sibling) => {
+        const text = cleanDisplayText($(sibling).text());
+        if (
+          text &&
+          !isPriceOnlyText(text) &&
+          !looksLikeGarbageText(text) &&
+          !looksLikeGenericItemName(text) &&
+          !looksLikeMetadataText(text)
+        ) {
+          descriptionParts.push(text);
+        }
+      });
+
+    const description = descriptionParts.join(" ").trim();
+    const key = `${normalize(itemName)}|${price}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    hits.push({
+      itemName,
+      description,
+      itemText: [itemName, description].filter(Boolean).join(" "),
+      price,
+      sourceUrl,
+      sourceType:
+        sourceUrl.includes("toasttab.com")
+          ? "toast_ordering"
+          : sourceUrl.includes("spoton.com")
+            ? "spoton_ordering"
+            : "website_or_ordering_page",
     });
   });
 
@@ -1372,6 +1436,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
   // Try homepage
   allHits.push(...parseHiddenInputMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseStructuredVariantMenuHits(homeHtml, dish, websiteUrl));
+  allHits.push(...parseWixRichTextMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...extractMenuHitsFromHtml(homeHtml, dish, websiteUrl));
   allHits.push(...parseLocalBlockMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseSequentialMenuHits(homeHtml, dish, websiteUrl));
@@ -1393,6 +1458,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
     if (!html) continue;
     allHits.push(...parseHiddenInputMenuHits(html, dish, link));
     allHits.push(...parseStructuredVariantMenuHits(html, dish, link));
+    allHits.push(...parseWixRichTextMenuHits(html, dish, link));
     allHits.push(...extractMenuHitsFromHtml(html, dish, link));
     allHits.push(...parseLocalBlockMenuHits(html, dish, link));
     allHits.push(...parseSequentialMenuHits(html, dish, link));
@@ -1411,6 +1477,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
       if (!nestedHtml) continue;
       allHits.push(...parseHiddenInputMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseStructuredVariantMenuHits(nestedHtml, dish, nestedLink));
+      allHits.push(...parseWixRichTextMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...extractMenuHitsFromHtml(nestedHtml, dish, nestedLink));
       allHits.push(...parseLocalBlockMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseSequentialMenuHits(nestedHtml, dish, nestedLink));
