@@ -49,10 +49,10 @@ type SearchResponsePayload = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v24";
+const CACHE_VERSION = "v25";
 const FETCH_TIMEOUT_MS = 5000;
 const SITE_CHECK_BATCH_SIZE = 4;
-const MAX_CANDIDATE_RESTAURANTS = 15;
+const MAX_CANDIDATE_RESTAURANTS = 25;
 
 function absoluteUrl(base: string, href: string) {
   try {
@@ -771,7 +771,7 @@ function collectRelevantLinks(html: string, baseUrl: string, dishQuery: string):
     if (full.startsWith("http")) urls.add(full);
   }
 
-  return Array.from(urls).slice(0, 15);
+  return Array.from(urls).slice(0, 8);
 }
 
 async function fetchText(url: string): Promise<string | null> {
@@ -826,7 +826,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
     allHits.push(...parseLittleChihuahuaMenu(html, dish, link));
 
     // One more level deep for category links like ?category=Vegetarian+Burritos
-    const nestedLinks = sortLinksByPriority(collectRelevantLinks(html, link, dish));
+    const nestedLinks = sortLinksByPriority(collectRelevantLinks(html, link, dish)).slice(0, 4);
     for (const nestedLink of nestedLinks) {
       if (visitedLinks.has(nestedLink)) continue;
       visitedLinks.add(nestedLink);
