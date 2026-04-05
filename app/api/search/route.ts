@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v41";
+const CACHE_VERSION = "v42";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -314,6 +314,32 @@ function shouldKeepResultForQuery(result: SearchResult, query: string) {
   if (hasExplicitMeat && !hasFlexibleProteinChoice) return false;
 
   return isVegetarianCompatible(combinedText);
+}
+
+function isLowConfidenceResult(result: SearchResult, query: string) {
+  const normalizedItem = normalize(result.itemName);
+  const normalizedQuery = normalize(query);
+  const hasDescription =
+    Boolean(result.description) && result.description !== "No description available.";
+
+  if (
+    !hasDescription &&
+    normalizedItem === normalizedQuery &&
+    !result.sourceUrl.includes("toasttab.com") &&
+    !result.sourceUrl.includes("spoton.com")
+  ) {
+    return true;
+  }
+
+  if (
+    !hasDescription &&
+    normalizedItem === normalizedQuery &&
+    result.sourceUrl.includes("toast.site/order")
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function isPriceOnlyText(text: string) {
@@ -1944,6 +1970,7 @@ export async function POST(req: NextRequest) {
       (result) =>
         resultMatchesQueryStrictly(result, dish) &&
         shouldKeepResultForQuery(result, dish) &&
+        !isLowConfidenceResult(result, dish) &&
         withinRadius(result.distanceMiles, requestedRadiusMiles)
     );
 
