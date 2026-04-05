@@ -50,7 +50,7 @@ type SearchResponsePayload = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v25";
+const CACHE_VERSION = "v26";
 const FETCH_TIMEOUT_MS = 5000;
 const SITE_CHECK_BATCH_SIZE = 4;
 const MAX_CANDIDATE_RESTAURANTS = 25;
@@ -164,6 +164,32 @@ function parseQueryIntent(query: string): QueryIntent {
     coreTokens: normalizedQuery.filter((token) => !DIETARY_TERMS.has(token)),
     dietaryTokens: normalizedQuery.filter((token) => DIETARY_TERMS.has(token)),
   };
+}
+
+function inferCuisineKeyword(query: string) {
+  const forms = buildTokenForms(query);
+
+  if (
+    ["pad", "thai", "tom", "yum", "panang", "khao", "soi", "larb", "satay", "ew", "mao"].some(
+      (token) => forms.has(token)
+    )
+  ) {
+    return "thai";
+  }
+
+  if (
+    ["burrito", "taco", "taqueria", "quesadilla", "enchilada", "tamale"].some((token) =>
+      forms.has(token)
+    )
+  ) {
+    return "mexican";
+  }
+
+  if (["pancake", "waffle", "omelet", "omelette", "breakfast"].some((token) => forms.has(token))) {
+    return "breakfast";
+  }
+
+  return "";
 }
 
 function buildTokenForms(text: string) {
@@ -1105,7 +1131,39 @@ export async function POST(req: NextRequest) {
       const dishTextJson = await dishTextRes.json();
       const dishTextPlaces = dishTextRes.ok ? dishTextJson.places || [] : [];
 
-      places = dedupePlaces([...dishTextPlaces, ...(nearbyJson.places || []), ...textPlaces]);
+      const cuisineKeyword = inferCuisineKeyword(dish);
+      let cuisinePlaces: Place[] = [];
+
+      if (cuisineKeyword) {
+        const cuisineRes = await fetch("https://places.googleapis.com/v1/places:searchText", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": apiKey,
+            "X-Goog-FieldMask": fieldMask,
+          },
+          body: JSON.stringify({
+            textQuery: `${cuisineKeyword} restaurants near ${address}`,
+            pageSize: 20,
+            locationBias: {
+              circle: {
+                center: { latitude: center.lat, longitude: center.lng },
+                radius: meters,
+              },
+            },
+          }),
+        });
+
+        const cuisineJson = await cuisineRes.json();
+        cuisinePlaces = cuisineRes.ok ? cuisineJson.places || [] : [];
+      }
+
+      places = dedupePlaces([
+        ...dishTextPlaces,
+        ...cuisinePlaces,
+        ...(nearbyJson.places || []),
+        ...textPlaces,
+      ]);
       await setCachedValue(placesCacheKey, places);
     }
 
