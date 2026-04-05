@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v28";
+const CACHE_VERSION = "v29";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -784,6 +784,89 @@ function parseLooseTextBlockHits(html: string, dishQuery: string, sourceUrl: str
   return hits;
 }
 
+function parseEmbeddedDataMenuHits(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
+  const $ = cheerio.load(html);
+  const query = normalize(dishQuery);
+  const scripts = $("script")
+    .map((_, el) => $(el).html() || "")
+    .get()
+    .filter(Boolean);
+
+  const hits: MenuHit[] = [];
+  const seen = new Set<string>();
+
+  for (const script of scripts) {
+    const cleaned = script
+      .replace(/\\u0026/g, "&")
+      .replace(/\\u003c/g, "<")
+      .replace(/\\u003e/g, ">")
+      .replace(/\\n/g, " ")
+      .replace(/\\"/g, '"')
+      .replace(/\s+/g, " ");
+
+    const normalizedScript = normalize(cleaned);
+    let searchIndex = normalizedScript.indexOf(query);
+
+    while (searchIndex !== -1) {
+      const start = Math.max(0, searchIndex - 300);
+      const end = Math.min(cleaned.length, searchIndex + 500);
+      const window = cleaned.slice(start, end);
+
+      const quotedCandidates = Array.from(window.matchAll(/"([^"]{3,180})"/g))
+        .map((match) => cleanDisplayText(match[1]))
+        .filter((candidate) => queryMatchesText(dishQuery, candidate))
+        .filter((candidate) => !looksLikeGarbageText(candidate) && !looksLikeGenericItemName(candidate));
+
+      const itemName = quotedCandidates.sort((a, b) => a.length - b.length)[0] || cleanDisplayText(dishQuery);
+
+      const moneyMatch =
+        window.match(/\$\s?\d{1,2}(?:\.\d{2})?/) ||
+        window.match(/"price"\s*:\s*"?(\d{3,5})"?/) ||
+        window.match(/"basePrice"\s*:\s*"?(\d{3,5})"?/);
+
+      if (!moneyMatch) {
+        searchIndex = normalizedScript.indexOf(query, searchIndex + query.length);
+        continue;
+      }
+
+      let price = moneyMatch[0];
+      if (!price.startsWith("$")) {
+        const cents = Number(moneyMatch[1] || "0");
+        if (!Number.isFinite(cents) || cents <= 0) {
+          searchIndex = normalizedScript.indexOf(query, searchIndex + query.length);
+          continue;
+        }
+        price = `$${(cents / 100).toFixed(2)}`;
+      } else {
+        price = price.replace(/\s+/g, "");
+      }
+
+      const description = quotedCandidates.find((candidate) => candidate !== itemName) || "";
+      const key = `${normalize(itemName)}|${price}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        hits.push({
+          itemName,
+          description,
+          itemText: [itemName, description].filter(Boolean).join(" "),
+          price,
+          sourceUrl,
+          sourceType:
+            sourceUrl.includes("toasttab.com")
+              ? "toast_ordering"
+              : sourceUrl.includes("spoton.com")
+                ? "spoton_ordering"
+                : "website_or_ordering_page",
+        });
+      }
+
+      searchIndex = normalizedScript.indexOf(query, searchIndex + query.length);
+    }
+  }
+
+  return hits;
+}
+
 function sortLinksByPriority(links: string[]) {
   const priority = (link: string) => {
     const lower = link.toLowerCase();
@@ -973,6 +1056,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
   allHits.push(...parseSequentialMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseForwardPriceMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseLooseTextBlockHits(homeHtml, dish, websiteUrl));
+  allHits.push(...parseEmbeddedDataMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseLittleChihuahuaMenu(homeHtml, dish, websiteUrl));
 
   // Try menu/order links (Toast/Slice/etc)
@@ -990,6 +1074,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
     allHits.push(...parseSequentialMenuHits(html, dish, link));
     allHits.push(...parseForwardPriceMenuHits(html, dish, link));
     allHits.push(...parseLooseTextBlockHits(html, dish, link));
+    allHits.push(...parseEmbeddedDataMenuHits(html, dish, link));
     allHits.push(...parseLittleChihuahuaMenu(html, dish, link));
 
     // One more level deep for category links like ?category=Vegetarian+Burritos
@@ -1004,6 +1089,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
       allHits.push(...parseSequentialMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseForwardPriceMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseLooseTextBlockHits(nestedHtml, dish, nestedLink));
+      allHits.push(...parseEmbeddedDataMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseLittleChihuahuaMenu(nestedHtml, dish, nestedLink));
     }
   }
