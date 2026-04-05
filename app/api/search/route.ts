@@ -413,6 +413,35 @@ function isSeparatorLine(line: string) {
   return /^([*•·-]\s*){2,}$/.test(normalized) || normalized === "* * *";
 }
 
+function looksLikeOptionLine(line: string) {
+  const normalized = normalize(line);
+  return (
+    /^(small|large|medium)$/.test(normalized) ||
+    /^(beef|chicken|pork|shrimp|tofu|veggies|vegetables)$/.test(normalized) ||
+    normalized.includes("add $") ||
+    normalized.includes("extra $") ||
+    normalized.includes("choice of") ||
+    normalized.includes("served with rice") ||
+    normalized.includes("served with noodle")
+  );
+}
+
+function selectDescriptionLines(lines: string[]) {
+  return lines
+    .filter(
+      (line) =>
+        line &&
+        !isPriceOnlyText(line) &&
+        !isSeparatorLine(line) &&
+        !looksLikeGarbageText(line) &&
+        !looksLikeGenericItemName(line) &&
+        !looksLikeOptionLine(line)
+    )
+    .slice(0, 2)
+    .join(" ")
+    .trim();
+}
+
 function cleanDisplayText(text: string) {
   return text
     .replace(/([a-z])([A-Z])/g, "$1 $2")
@@ -772,16 +801,10 @@ function parseLooseTextBlockHits(html: string, dishQuery: string, sourceUrl: str
     if (!priceLine) continue;
 
     const priceIndex = lookahead.indexOf(priceLine);
-    const description = lookahead
-      .slice(0, priceIndex)
-      .filter(
-        (line) =>
-          !looksLikeGarbageText(line) &&
-          !looksLikeGenericItemName(line) &&
-          !/^(small|large|tofu\s*\/\s*veggies|chicken or pork|beef|shrimp)$/i.test(line)
-      )
-      .join(" ")
-      .trim();
+    const description = selectDescriptionLines([
+      ...lookahead.slice(0, priceIndex),
+      ...lookahead.slice(priceIndex + 1, priceIndex + 3),
+    ]);
 
     const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
     const key = `${normalize(itemName)}|${price}`;
