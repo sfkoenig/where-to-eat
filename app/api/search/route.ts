@@ -49,11 +49,38 @@ type SearchResponsePayload = {
   cachedAt?: string;
 };
 
+type KnownRestaurantFallback = {
+  restaurantName: string;
+  address: string;
+  lat: number;
+  lng: number;
+  websiteUrl: string;
+  googleMapsUrl?: string | null;
+  sourceUrls: string[];
+  cuisines: string[];
+};
+
 const CACHE_DAYS = 30;
 const CACHE_VERSION = "v26";
 const FETCH_TIMEOUT_MS = 5000;
 const SITE_CHECK_BATCH_SIZE = 4;
 const MAX_CANDIDATE_RESTAURANTS = 25;
+
+const KNOWN_RESTAURANT_FALLBACKS: KnownRestaurantFallback[] = [
+  {
+    restaurantName: "Khob Khun Thai Cuisine & Breakfast",
+    address: "3741 Geary Blvd, San Francisco, CA 94118, USA",
+    lat: 37.780547,
+    lng: -122.45949,
+    websiteUrl: "https://www.khobkhunsf.com/thaimenu",
+    googleMapsUrl: null,
+    sourceUrls: [
+      "https://www.khobkhunsf.com/thaimenu",
+      "https://order.toasttab.com/online/khob-khun-thai-cuisine-breakfast-3741-geary-blvd",
+    ],
+    cuisines: ["thai"],
+  },
+];
 
 function absoluteUrl(base: string, href: string) {
   try {
@@ -898,6 +925,38 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
   return staleCached?.value || [];
 }
 
+async function findDishHitsForKnownFallback(
+  fallback: KnownRestaurantFallback,
+  dish: string
+): Promise<SearchResult[]> {
+  const allHits: MenuHit[] = [];
+
+  for (const sourceUrl of fallback.sourceUrls) {
+    const hits = await findDishHitsForWebsite(sourceUrl, dish);
+    allHits.push(...hits);
+  }
+
+  const deduped = new Map<string, MenuHit>();
+  for (const hit of allHits) {
+    const key = `${normalize(hit.itemName)}|${hit.price}`;
+    if (!deduped.has(key)) deduped.set(key, hit);
+  }
+
+  return Array.from(deduped.values()).map((hit) => ({
+    restaurantName: fallback.restaurantName,
+    address: fallback.address,
+    dish,
+    itemName: hit.itemName,
+    price: hit.price,
+    description: hit.description,
+    sourceType: hit.sourceType || "website_or_ordering_page",
+    sourceUrl: hit.sourceUrl,
+    websiteUrl: fallback.websiteUrl,
+    googleMapsUrl: fallback.googleMapsUrl || null,
+    distanceMiles: undefined,
+  }));
+}
+
 async function geocodeAddress(address: string, apiKey: string) {
   const cacheKey = `${CACHE_VERSION}:geocode:${normalize(address)}`;
   const cached = await getCachedValue<{ lat: number; lng: number }>(cacheKey, CACHE_DAYS);
@@ -1194,6 +1253,30 @@ export async function POST(req: NextRequest) {
       const overflowPlaces = crawlablePlaces.slice(MAX_CANDIDATE_RESTAURANTS);
       const overflowResults = await collectResultsForPlaces(overflowPlaces, dish, center);
       results = [...results, ...overflowResults];
+    }
+
+    const cuisineKeyword = inferCuisineKeyword(dish);
+    const applicableFallbacks = KNOWN_RESTAURANT_FALLBACKS.filter((fallback) => {
+      if (cuisineKeyword && !fallback.cuisines.includes(cuisineKeyword)) return false;
+      const fallbackDistance = distanceMiles(center.lat, center.lng, fallback.lat, fallback.lng);
+      return withinRadius(fallbackDistance, Number(radiusMiles || 1));
+    });
+
+    for (const fallback of applicableFallbacks) {
+      const alreadyPresent = results.some(
+        (result) =>
+          normalize(result.restaurantName) === normalize(fallback.restaurantName) ||
+          normalize(result.address) === normalize(fallback.address)
+      );
+      if (alreadyPresent) continue;
+
+      const fallbackResults = await findDishHitsForKnownFallback(fallback, dish);
+      results.push(
+        ...fallbackResults.map((result) => ({
+          ...result,
+          distanceMiles: distanceMiles(center.lat, center.lng, fallback.lat, fallback.lng),
+        }))
+      );
     }
 
     const requestedRadiusMiles = Number(radiusMiles || 1);
