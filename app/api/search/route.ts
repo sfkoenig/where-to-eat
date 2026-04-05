@@ -320,6 +320,22 @@ function isPriceOnlyText(text: string) {
   return /^\$?\d{1,3}(?:\.\d{2})?$/.test(text.trim());
 }
 
+function looksLikeModifierPriceContext(text: string) {
+  const normalized = normalize(text);
+  return (
+    normalized.includes("add $") ||
+    normalized.includes("extra $") ||
+    normalized.includes("upgrade $") ||
+    normalized.includes("for beef") ||
+    normalized.includes("for chicken") ||
+    normalized.includes("for pork") ||
+    normalized.includes("for shrimp") ||
+    normalized.includes("for tofu") ||
+    normalized.includes("substitute") ||
+    normalized.includes("additional charge")
+  );
+}
+
 function resultMatchesQueryStrictly(result: SearchResult, query: string) {
   const visibleText = [result.itemName, result.description].filter(Boolean).join(" ").trim();
   if (!visibleText) return false;
@@ -512,6 +528,7 @@ function extractMenuHitsFromHtml(html: string, dishQuery: string, sourceUrl: str
 
     const priceMatches = raw.match(/\$\s?\d{1,3}(?:\.\d{2})?/g);
     if (!priceMatches || priceMatches.length !== 1) return;
+    if (looksLikeModifierPriceContext(raw)) return;
     if (likelyCategoryLabel(normalized)) return;
 
     const lineMatches = queryMatchesText(dishQuery, raw);
@@ -671,7 +688,10 @@ function parseForwardPriceMenuHits(html: string, dishQuery: string, sourceUrl: s
     const nextLines = lines
       .slice(i + 1, i + 9)
       .filter((candidate) => !isSeparatorLine(candidate));
-    const priceLine = nextLines.find((candidate) => /^\$?\d{1,2}(?:\.\d{2})?$/.test(candidate));
+    const priceLine = nextLines.find(
+      (candidate) =>
+        /^\$?\d{1,2}(?:\.\d{2})?$/.test(candidate) && !looksLikeModifierPriceContext(candidate)
+    );
     if (!priceLine) continue;
 
     const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
@@ -746,7 +766,9 @@ function parseLooseTextBlockHits(html: string, dishQuery: string, sourceUrl: str
     if (!queryMatchesText(dishQuery, itemName)) continue;
 
     const lookahead = lines.slice(i + 1, i + 15);
-    const priceLine = lookahead.find((line) => /^\$?\d{1,2}(?:\.\d{2})?$/.test(line));
+    const priceLine = lookahead.find(
+      (line) => /^\$?\d{1,2}(?:\.\d{2})?$/.test(line) && !looksLikeModifierPriceContext(line)
+    );
     if (!priceLine) continue;
 
     const priceIndex = lookahead.indexOf(priceLine);
@@ -819,8 +841,18 @@ function parseEmbeddedDataMenuHits(html: string, dishQuery: string, sourceUrl: s
 
       const itemName = quotedCandidates.sort((a, b) => a.length - b.length)[0] || cleanDisplayText(dishQuery);
 
+      const moneyMatches = Array.from(window.matchAll(/\$\s?\d{1,2}(?:\.\d{2})?/g)).map((match) => ({
+        price: match[0],
+        index: match.index || 0,
+      }));
+
+      const contextualMoneyMatch = moneyMatches.find(({ index }) => {
+        const snippet = window.slice(Math.max(0, index - 40), Math.min(window.length, index + 40));
+        return !looksLikeModifierPriceContext(snippet);
+      });
+
       const moneyMatch =
-        window.match(/\$\s?\d{1,2}(?:\.\d{2})?/) ||
+        (contextualMoneyMatch ? [contextualMoneyMatch.price, contextualMoneyMatch.price] : null) ||
         window.match(/"price"\s*:\s*"?(\d{3,5})"?/) ||
         window.match(/"basePrice"\s*:\s*"?(\d{3,5})"?/);
 
