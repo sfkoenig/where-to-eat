@@ -98,6 +98,17 @@ export default function HomePage() {
       }}
     >
       <div style={{ maxWidth: 1180, margin: "0 auto" }}>
+        <style>{`
+          @media (max-width: 900px) {
+            .foodfinder-search-grid {
+              grid-template-columns: 1fr !important;
+            }
+
+            .foodfinder-results-grid {
+              grid-template-columns: 1fr !important;
+            }
+          }
+        `}</style>
         <section
           style={{
             padding: 24,
@@ -130,6 +141,7 @@ export default function HomePage() {
 
           <form
             onSubmit={onSubmit}
+            className="foodfinder-search-grid"
             style={{
               display: "grid",
               gap: 14,
@@ -211,6 +223,7 @@ export default function HomePage() {
         </section>
 
         <section
+          className="foodfinder-results-grid"
           style={{
             display: "grid",
             gridTemplateColumns: results.length > 0 ? "1.15fr 0.85fr" : "1fr",
