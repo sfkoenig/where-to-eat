@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v30";
+const CACHE_VERSION = "v31";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -954,6 +954,15 @@ function sortLinksByPriority(links: string[]) {
   return [...links].sort((a, b) => priority(a) - priority(b));
 }
 
+function menuHitQualityScore(hit: MenuHit) {
+  let score = 0;
+  if (hit.itemName && !looksLikeGarbageText(hit.itemName) && !looksLikeGenericItemName(hit.itemName)) score += 5;
+  if (hit.description && hit.description !== "No description available.") score += 6;
+  if (hit.itemText && hit.itemText !== hit.itemName) score += 2;
+  if (hit.sourceType === "toast_ordering" || hit.sourceType === "spoton_ordering") score += 1;
+  return score;
+}
+
 function knownOrderingLinksForWebsite(websiteUrl: string) {
   const normalizedWebsite = normalize(websiteUrl);
 
@@ -1172,7 +1181,10 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
   const dedup = new Map<string, MenuHit>();
   for (const h of allHits) {
     const k = `${normalize(h.itemName)}|${h.price}`;
-    if (!dedup.has(k)) dedup.set(k, h);
+    const existing = dedup.get(k);
+    if (!existing || menuHitQualityScore(h) > menuHitQualityScore(existing)) {
+      dedup.set(k, h);
+    }
   }
 
   const finalHits = Array.from(dedup.values()).slice(0, 20);
