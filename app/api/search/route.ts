@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v32";
+const CACHE_VERSION = "v33";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -904,6 +904,64 @@ function parseLooseTextBlockHits(html: string, dishQuery: string, sourceUrl: str
   return hits;
 }
 
+function parseHiddenInputMenuHits(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
+  const $ = cheerio.load(html);
+  const rawFoodModel = $("#divModelFood").attr("value");
+  if (!rawFoodModel) return [];
+
+  type HiddenFood = {
+    foodName?: string;
+    foodPrice?: number;
+    foodDesc?: string;
+    active?: boolean;
+    isShow?: boolean;
+    isOutStock?: boolean;
+  };
+
+  let foods: HiddenFood[];
+  try {
+    foods = JSON.parse(rawFoodModel) as HiddenFood[];
+  } catch {
+    return [];
+  }
+
+  const hits: MenuHit[] = [];
+  const seen = new Set<string>();
+
+  for (const food of foods) {
+    const itemName = cleanDisplayText(food.foodName || "");
+    if (!itemName) continue;
+    if (!queryMatchesText(dishQuery, itemName)) continue;
+    if (looksLikeGarbageText(itemName) || looksLikeGenericItemName(itemName)) continue;
+    if (food.active === false || food.isShow === false || food.isOutStock === true) continue;
+
+    const numericPrice = Number(food.foodPrice);
+    if (!Number.isFinite(numericPrice) || numericPrice < 5) continue;
+
+    const description = cleanDisplayText(food.foodDesc || "");
+    const price = `$${numericPrice.toFixed(2)}`;
+    const key = `${normalize(itemName)}|${price}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    hits.push({
+      itemName,
+      description,
+      itemText: [itemName, description].filter(Boolean).join(" "),
+      price,
+      sourceUrl,
+      sourceType:
+        sourceUrl.includes("toasttab.com")
+          ? "toast_ordering"
+          : sourceUrl.includes("spoton.com")
+            ? "spoton_ordering"
+            : "website_or_ordering_page",
+    });
+  }
+
+  return hits;
+}
+
 function parseEmbeddedDataMenuHits(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
   const $ = cheerio.load(html);
   const query = normalize(dishQuery);
@@ -1191,6 +1249,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
   const visitedLinks = new Set<string>();
 
   // Try homepage
+  allHits.push(...parseHiddenInputMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...extractMenuHitsFromHtml(homeHtml, dish, websiteUrl));
   allHits.push(...parseLocalBlockMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseSequentialMenuHits(homeHtml, dish, websiteUrl));
@@ -1210,6 +1269,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
 
     const html = await fetchText(link);
     if (!html) continue;
+    allHits.push(...parseHiddenInputMenuHits(html, dish, link));
     allHits.push(...extractMenuHitsFromHtml(html, dish, link));
     allHits.push(...parseLocalBlockMenuHits(html, dish, link));
     allHits.push(...parseSequentialMenuHits(html, dish, link));
@@ -1226,6 +1286,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
 
       const nestedHtml = await fetchText(nestedLink);
       if (!nestedHtml) continue;
+      allHits.push(...parseHiddenInputMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...extractMenuHitsFromHtml(nestedHtml, dish, nestedLink));
       allHits.push(...parseLocalBlockMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseSequentialMenuHits(nestedHtml, dish, nestedLink));
