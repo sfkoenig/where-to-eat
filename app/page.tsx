@@ -134,7 +134,6 @@ export default function HomePage() {
               <input
                 value={dish}
                 onChange={(e) => setDish(e.target.value)}
-                onFocus={(e) => e.target.select()}
                 type="text"
                 placeholder="pad thai"
                 style={{
@@ -152,7 +151,6 @@ export default function HomePage() {
               <input
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
-                onFocus={(e) => e.target.select()}
                 type="text"
                 placeholder="123 Main St, San Francisco, CA"
                 style={{
