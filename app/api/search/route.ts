@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v45";
+const CACHE_VERSION = "v46";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -154,9 +154,6 @@ const VEGETARIAN_SIGNALS = new Set([
   "mushroom",
   "beans",
   "bean",
-  "cheese",
-  "avocado",
-  "guacamole",
   "sofritas",
   "falafel",
   "eggplant",
@@ -180,6 +177,11 @@ const MEAT_SUBSTITUTE_PHRASES = [
   "mock chicken",
   "impossible chicken",
   "beyond chicken",
+  "impossible dog",
+  "beyond dog",
+  "vegan sausage",
+  "veggie sausage",
+  "vegetarian sausage",
   "veg dog",
   "vegan dog",
   "veggie dog",
