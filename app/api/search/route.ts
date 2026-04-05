@@ -49,7 +49,7 @@ type SearchResponsePayload = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v21";
+const CACHE_VERSION = "v22";
 const FETCH_TIMEOUT_MS = 8000;
 const SITE_CHECK_BATCH_SIZE = 4;
 const MAX_CANDIDATE_RESTAURANTS = 15;
@@ -247,6 +247,19 @@ function shouldKeepResultForQuery(result: SearchResult, query: string) {
   if (hasExplicitMeat && !hasFlexibleProteinChoice) return false;
 
   return isVegetarianCompatible(combinedText);
+}
+
+function isPriceOnlyText(text: string) {
+  return /^\$?\d{1,3}(?:\.\d{2})?$/.test(text.trim());
+}
+
+function resultMatchesQueryStrictly(result: SearchResult, query: string) {
+  const visibleText = [result.itemName, result.description].filter(Boolean).join(" ").trim();
+  if (!visibleText) return false;
+  if (isPriceOnlyText(result.itemName)) return false;
+  if (looksLikeGenericItemName(result.itemName)) return false;
+
+  return queryMatchesContext(query, visibleText, "");
 }
 
 function queryMatchesText(query: string, text: string) {
@@ -1069,6 +1082,7 @@ export async function POST(req: NextRequest) {
     const requestedRadiusMiles = Number(radiusMiles || 1);
     const filteredResults = results.filter(
       (result) =>
+        resultMatchesQueryStrictly(result, dish) &&
         shouldKeepResultForQuery(result, dish) &&
         withinRadius(result.distanceMiles, requestedRadiusMiles)
     );
