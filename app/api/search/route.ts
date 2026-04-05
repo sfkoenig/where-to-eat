@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v44";
+const CACHE_VERSION = "v45";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -744,6 +744,7 @@ function parseEnumeratedMenuHits(html: string, dishQuery: string, sourceUrl: str
 function cleanDisplayText(text: string) {
   return text
     .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[“”]/g, '"')
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -826,15 +827,19 @@ function deriveDescriptionFromItemText(itemName: string, itemText: string) {
 
   if (normalizedItemText.startsWith(normalizedItemName)) {
     const suffix = cleanedItemText.slice(cleanedItemName.length).replace(/^[\s,:.-]+/, "").trim();
+    const collapsedSuffix = suffix.replace(
+      new RegExp(`^(?:${cleanedItemName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*)+`, "i"),
+      ""
+    ).trim();
     if (
-      suffix &&
-      !isPriceOnlyText(suffix) &&
-      !looksLikeGarbageText(suffix) &&
-      !looksLikeGenericItemName(suffix) &&
-      !looksLikeMetadataText(suffix) &&
-      normalize(suffix) !== normalizedItemName
+      collapsedSuffix &&
+      !isPriceOnlyText(collapsedSuffix) &&
+      !looksLikeGarbageText(collapsedSuffix) &&
+      !looksLikeGenericItemName(collapsedSuffix) &&
+      !looksLikeMetadataText(collapsedSuffix) &&
+      normalize(collapsedSuffix) !== normalizedItemName
     ) {
-      return suffix;
+      return collapsedSuffix;
     }
   }
 
@@ -859,8 +864,12 @@ function finalizedDescription(hit: MenuHit) {
 
 function canonicalItemKey(itemName: string) {
   return normalize(itemName)
+    .replace(/\$\s?\d{1,3}(?:\.\d{2})?/g, " ")
+    .replace(/\bimage\b/g, " ")
+    .replace(/\b(photos?|reviews?)\b.*$/g, " ")
     .replace(/^(l|d)\s+/, "")
     .replace(/^(lunch|dinner)\s+/, "")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -874,6 +883,10 @@ function mergeResultDetails(base: SearchResult, candidate: SearchResult) {
 
   if (!baseHasDescription && candidateHasDescription) {
     merged.description = candidate.description;
+  }
+
+  if (canonicalItemKey(candidate.itemName).length < canonicalItemKey(merged.itemName).length) {
+    merged.itemName = candidate.itemName;
   }
 
   return merged;
@@ -1378,14 +1391,83 @@ function parseEmbeddedDataMenuHits(html: string, dishQuery: string, sourceUrl: s
   return hits;
 }
 
+function inferSourceType(sourceUrl: string) {
+  if (sourceUrl.includes("toasttab.com") || sourceUrl.includes("toast.site")) return "toast_ordering";
+  if (sourceUrl.includes("spoton.com")) return "spoton_ordering";
+  if (sourceUrl.includes("order.online")) return "order_online";
+  return "website_or_ordering_page";
+}
+
+function parseOrderOnlineMenuHits(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
+  if (!sourceUrl.includes("order.online")) return [];
+
+  const lines = cheerio
+    .load(html)("body")
+    .text()
+    .split("\n")
+    .map((line) => cleanDisplayText(line))
+    .filter((line) => line.length > 1 && line.length < 260 && !isSeparatorLine(line));
+
+  const hits: MenuHit[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const imageMatch = lines[i].match(/^Image:\s*(.+)$/i);
+    const itemName = cleanDisplayText(imageMatch ? imageMatch[1] : lines[i]);
+    if (!itemName) continue;
+    if (!queryMatchesText(dishQuery, itemName)) continue;
+    if (looksLikeGarbageText(itemName) || looksLikeGenericItemName(itemName) || looksLikeMetadataText(itemName)) {
+      continue;
+    }
+
+    const nextLines = lines.slice(i + 1, i + 6);
+    const priceLine = chooseBestPriceLine(nextLines);
+    if (!priceLine) continue;
+
+    const description = nextLines
+      .filter((candidate) => candidate !== priceLine)
+      .filter(
+        (candidate) =>
+          !candidate.startsWith("Image:") &&
+          !isPriceOnlyText(candidate) &&
+          !looksLikeGarbageText(candidate) &&
+          !looksLikeGenericItemName(candidate) &&
+          !looksLikeMetadataText(candidate)
+      )
+      .map((candidate) =>
+        candidate.replace(new RegExp(`^(?:${itemName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*)+`, "i"), "").trim()
+      )
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+
+    const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
+    const key = `${canonicalItemKey(itemName)}|${price}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    hits.push({
+      itemName,
+      description,
+      itemText: [itemName, description].filter(Boolean).join(" "),
+      price,
+      sourceUrl,
+      sourceType: inferSourceType(sourceUrl),
+    });
+  }
+
+  return hits;
+}
+
 function sortLinksByPriority(links: string[]) {
   const priority = (link: string) => {
     const lower = link.toLowerCase();
     if (lower.includes("toasttab.com")) return 0;
     if (lower.includes("spoton.com")) return 1;
-    if (lower.includes("order")) return 2;
-    if (lower.includes("menu")) return 3;
-    return 4;
+    if (lower.includes("order.online")) return 2;
+    if (lower.includes("order")) return 3;
+    if (lower.includes("menu")) return 4;
+    return 5;
   };
 
   return [...links].sort((a, b) => priority(a) - priority(b));
@@ -1586,6 +1668,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
   allHits.push(...parseForwardPriceMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseLooseTextBlockHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseEmbeddedDataMenuHits(homeHtml, dish, websiteUrl));
+  allHits.push(...parseOrderOnlineMenuHits(homeHtml, dish, websiteUrl));
   allHits.push(...parseLittleChihuahuaMenu(homeHtml, dish, websiteUrl));
 
   // Try menu/order links (Toast/Slice/etc)
@@ -1609,6 +1692,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
     allHits.push(...parseForwardPriceMenuHits(html, dish, link));
     allHits.push(...parseLooseTextBlockHits(html, dish, link));
     allHits.push(...parseEmbeddedDataMenuHits(html, dish, link));
+    allHits.push(...parseOrderOnlineMenuHits(html, dish, link));
     allHits.push(...parseLittleChihuahuaMenu(html, dish, link));
 
     // One more level deep for category links like ?category=Vegetarian+Burritos
@@ -1629,6 +1713,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
       allHits.push(...parseForwardPriceMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseLooseTextBlockHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseEmbeddedDataMenuHits(nestedHtml, dish, nestedLink));
+      allHits.push(...parseOrderOnlineMenuHits(nestedHtml, dish, nestedLink));
       allHits.push(...parseLittleChihuahuaMenu(nestedHtml, dish, nestedLink));
     }
   }
@@ -2029,10 +2114,7 @@ export async function POST(req: NextRequest) {
 
     const dedupedResults = new Map<string, SearchResult>();
     for (const result of filteredResults) {
-      const baseText = result.description && result.description !== "No description available."
-        ? result.description
-        : result.itemName;
-      const key = `${normalize(result.address)}|${result.price}|${normalizedFingerprint(baseText)}`;
+      const key = `${normalize(result.address)}|${result.price}|${canonicalItemKey(result.itemName)}`;
       const directExisting = dedupedResults.get(key);
       if (!directExisting || resultQualityScore(result) > resultQualityScore(directExisting)) {
         dedupedResults.set(key, result);
