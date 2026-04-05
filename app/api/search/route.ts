@@ -75,6 +75,7 @@ type KnownRestaurantFallback = {
 const CACHE_DAYS = 30;
 const CACHE_VERSION = "v28";
 const FETCH_TIMEOUT_MS = 5000;
+const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
 const MAX_CANDIDATE_RESTAURANTS = 25;
 
@@ -925,11 +926,23 @@ function collectRelevantLinks(html: string, baseUrl: string, dishQuery: string):
 
 async function fetchText(url: string): Promise<string | null> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const isOrderingPlatform =
+    url.includes("toasttab.com") || url.includes("spoton.com") || url.includes("blizzfull.com");
+  const timeout = setTimeout(
+    () => controller.abort(),
+    isOrderingPlatform ? ORDERING_FETCH_TIMEOUT_MS : FETCH_TIMEOUT_MS
+  );
 
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 FoodFinder/1.0" },
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+      },
       cache: "no-store",
       redirect: "follow",
       signal: controller.signal,
