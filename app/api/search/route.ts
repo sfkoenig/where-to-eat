@@ -79,7 +79,7 @@ type ManualOverrideResult = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v50";
+const CACHE_VERSION = "v51";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -114,6 +114,7 @@ function absoluteUrl(base: string, href: string) {
 
 function normalize(s: string) {
   return s
+    .replace(/[’‘]/g, "'")
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/&/g, " ")
     .toLowerCase()
@@ -121,12 +122,18 @@ function normalize(s: string) {
     .trim();
 }
 
+const TOKEN_ALIASES: Record<string, string[]> = {
+  tso: ["tsao"],
+  tsao: ["tso"],
+};
+
 function tokenize(s: string) {
   return normalize(s)
+    .replace(/\b([a-z0-9]+)'s\b/g, "$1")
     .replace(/[^a-z0-9\s]/g, " ")
     .split(" ")
     .map((part) => part.trim())
-    .filter(Boolean);
+    .filter((part) => Boolean(part) && part !== "s");
 }
 
 function singularize(word: string) {
@@ -291,6 +298,10 @@ function buildTokenForms(text: string) {
   for (const token of tokenize(text)) {
     forms.add(token);
     forms.add(singularize(token));
+    for (const alias of TOKEN_ALIASES[token] || []) {
+      forms.add(alias);
+      forms.add(singularize(alias));
+    }
   }
   return forms;
 }
