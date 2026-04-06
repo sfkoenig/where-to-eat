@@ -166,6 +166,21 @@ const VEGETARIAN_SIGNALS = new Set([
   "cauliflower",
   "spinach",
 ]);
+const CONTEXTUAL_LEADING_TOKENS = new Set([
+  "american",
+  "cajun",
+  "chinese",
+  "french",
+  "greek",
+  "indian",
+  "italian",
+  "japanese",
+  "korean",
+  "mexican",
+  "spicy",
+  "thai",
+  "vietnamese",
+]);
 const FLEXIBLE_PROTEIN_PHRASES = [
   "choice of meat",
   "choice of protein",
@@ -459,7 +474,9 @@ function queryMatchesText(query: string, text: string) {
   const { coreTokens, dietaryTokens } = parseQueryIntent(query);
 
   const hasCoreMatch =
-    coreTokens.length === 0 || coreTokens.every((token) => textForms.has(token));
+    coreTokens.length === 0 ||
+    coreTokens.every((token) => textForms.has(token)) ||
+    supportsContextualCoreDrop(coreTokens, textForms, new Set<string>());
   if (!hasCoreMatch) return false;
 
   if (dietaryTokens.length === 0) return true;
@@ -479,7 +496,8 @@ function queryMatchesContext(query: string, primaryText: string, contextText: st
 
   const hasCoreMatch =
     coreTokens.length === 0 ||
-    coreTokens.every((token) => primaryForms.has(token) || contextForms.has(token));
+    coreTokens.every((token) => primaryForms.has(token) || contextForms.has(token)) ||
+    supportsContextualCoreDrop(coreTokens, primaryForms, contextForms);
   if (!hasCoreMatch) return false;
 
   if (dietaryTokens.length === 0) return true;
@@ -495,6 +513,23 @@ function queryMatchesContext(query: string, primaryText: string, contextText: st
 function coreHeadToken(query: string) {
   const { coreTokens } = parseQueryIntent(query);
   return coreTokens[coreTokens.length - 1] || "";
+}
+
+function supportsContextualCoreDrop(
+  coreTokens: string[],
+  primaryForms: Set<string>,
+  contextForms: Set<string>
+) {
+  if (coreTokens.length < 3) return false;
+
+  const [leadingToken, ...remainingTokens] = coreTokens;
+  if (!leadingToken || remainingTokens.length === 0) return false;
+  if (!CONTEXTUAL_LEADING_TOKENS.has(leadingToken)) return false;
+  if (MEAT_TERMS.has(leadingToken)) return false;
+  if (DIETARY_TERMS.has(leadingToken)) return false;
+  if (!contextForms.has(leadingToken)) return false;
+
+  return remainingTokens.every((token) => primaryForms.has(token) || contextForms.has(token));
 }
 
 function textHasHeadToken(text: string, query: string) {
