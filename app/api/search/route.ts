@@ -83,8 +83,10 @@ const CACHE_VERSION = "v49";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
-const MAX_CANDIDATE_RESTAURANTS = 25;
+const MAX_CANDIDATE_RESTAURANTS = 12;
 const SEARCH_TIME_BUDGET_MS = 15000;
+const MAX_LINKS_PER_SITE = 5;
+const MAX_NESTED_LINKS_PER_SITE = 2;
 
 const KNOWN_RESTAURANT_FALLBACKS: KnownRestaurantFallback[] = [
   {
@@ -1722,7 +1724,7 @@ function collectRelevantLinks(html: string, baseUrl: string, dishQuery: string):
     if (full.startsWith("http")) urls.add(full);
   }
 
-  return Array.from(urls).slice(0, 8);
+  return Array.from(urls).slice(0, MAX_LINKS_PER_SITE);
 }
 
 async function fetchText(url: string): Promise<string | null> {
@@ -1793,7 +1795,10 @@ async function findDishHitsForWebsite(
     allHits.push(...parseSourceSpecificMenuHits(html, dish, link));
 
     // One more level deep for category links like ?category=Vegetarian+Burritos
-    const nestedLinks = sortLinksByPriority(collectRelevantLinks(html, link, dish)).slice(0, 4);
+    const nestedLinks = sortLinksByPriority(collectRelevantLinks(html, link, dish)).slice(
+      0,
+      MAX_NESTED_LINKS_PER_SITE
+    );
     for (const nestedLink of nestedLinks) {
       if (deadlineMs && Date.now() >= deadlineMs) break;
       if (visitedLinks.has(nestedLink)) continue;
@@ -2208,24 +2213,8 @@ export async function POST(req: NextRequest) {
     const crawlablePlaces = enrichedPlaces.filter((p) => p.websiteUri);
     const firstPassPlaces = crawlablePlaces.slice(0, MAX_CANDIDATE_RESTAURANTS);
     const firstPassCollection = await collectResultsForPlaces(firstPassPlaces, dish, center, searchDeadlineMs);
-    let results: SearchResult[] = firstPassCollection.results;
+    const results: SearchResult[] = firstPassCollection.results;
     const crawlDiagnostics = [...firstPassCollection.diagnostics];
-
-    if (
-      results.length === 0 &&
-      crawlablePlaces.length > MAX_CANDIDATE_RESTAURANTS &&
-      Date.now() < searchDeadlineMs
-    ) {
-      const overflowPlaces = crawlablePlaces.slice(MAX_CANDIDATE_RESTAURANTS);
-      const overflowCollection = await collectResultsForPlaces(
-        overflowPlaces,
-        dish,
-        center,
-        searchDeadlineMs
-      );
-      results = [...results, ...overflowCollection.results];
-      crawlDiagnostics.push(...overflowCollection.diagnostics);
-    }
 
     const cuisineKeyword = inferCuisineKeyword(dish);
     const applicableFallbacks = KNOWN_RESTAURANT_FALLBACKS.filter((fallback) => {
