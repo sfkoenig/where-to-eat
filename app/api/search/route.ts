@@ -673,7 +673,7 @@ function parseStructuredVariantMenuHits(html: string, dishQuery: string, sourceU
     const variants = $(el).nextAll('[data-hook="item.priceVariants"]').first();
 
     if (!titleText || !variants.length) return;
-    if (!queryMatchesText(dishQuery, titleText)) return;
+    if (!queryMatchesContext(dishQuery, titleText, description)) return;
     if (looksLikeGarbageText(titleText) || looksLikeGenericItemName(titleText)) return;
 
     variants.find('[data-hook="item.variant"]').each((__, variantEl) => {
@@ -714,7 +714,6 @@ function parseWixRichTextMenuHits(html: string, dishQuery: string, sourceUrl: st
   $("h1, h2, h3, h4, h5").each((_, el) => {
     const titleText = cleanDisplayText($(el).text());
     if (!titleText) return;
-    if (!queryMatchesText(dishQuery, titleText)) return;
     if (looksLikeGarbageText(titleText) || looksLikeGenericItemName(titleText)) return;
 
     const priceMatch = titleText.match(/\$\s?\d{1,3}(?:\.\d{2})?/);
@@ -748,6 +747,7 @@ function parseWixRichTextMenuHits(html: string, dishQuery: string, sourceUrl: st
       });
 
     const description = descriptionParts.join(" ").trim();
+    if (!queryMatchesContext(dishQuery, itemName, description)) return;
     const key = `${normalize(itemName)}|${price}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -787,7 +787,6 @@ function parseEnumeratedMenuHits(html: string, dishQuery: string, sourceUrl: str
     const itemName = cleanDisplayText(headingMatch ? headingMatch[1] : line.replace(/^#+\s*\d+\.\s+/, ""));
 
     if (!itemName) continue;
-    if (!queryMatchesText(dishQuery, itemName)) continue;
     if (looksLikeGarbageText(itemName) || looksLikeGenericItemName(itemName)) continue;
 
     const nextLines = lines.slice(i + 1, i + 6);
@@ -805,6 +804,7 @@ function parseEnumeratedMenuHits(html: string, dishQuery: string, sourceUrl: str
       )
       .join(" ")
       .trim();
+    if (!queryMatchesContext(dishQuery, itemName, description)) continue;
 
     const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
     const key = `${normalize(itemName)}|${price}`;
@@ -1355,7 +1355,6 @@ function parseHiddenInputMenuHits(html: string, dishQuery: string, sourceUrl: st
   for (const food of foods) {
     const itemName = cleanDisplayText(food.foodName || "");
     if (!itemName) continue;
-    if (!queryMatchesText(dishQuery, itemName)) continue;
     if (looksLikeGarbageText(itemName) || looksLikeGenericItemName(itemName)) continue;
     if (food.active === false || food.isShow === false || food.isOutStock === true) continue;
 
@@ -1363,6 +1362,7 @@ function parseHiddenInputMenuHits(html: string, dishQuery: string, sourceUrl: st
     if (!Number.isFinite(numericPrice) || numericPrice < 5) continue;
 
     const description = cleanDisplayText(food.foodDesc || "");
+    if (!queryMatchesContext(dishQuery, itemName, description)) continue;
     const price = `$${numericPrice.toFixed(2)}`;
     const key = `${normalize(itemName)}|${price}`;
     if (seen.has(key)) continue;
@@ -1503,7 +1503,6 @@ function parseOrderOnlineMenuHits(html: string, dishQuery: string, sourceUrl: st
     const imageMatch = lines[i].match(/^Image:\s*(.+)$/i);
     const itemName = cleanDisplayText(imageMatch ? imageMatch[1] : lines[i]);
     if (!itemName) continue;
-    if (!queryMatchesText(dishQuery, itemName)) continue;
     if (looksLikeGarbageText(itemName) || looksLikeGenericItemName(itemName) || looksLikeMetadataText(itemName)) {
       continue;
     }
@@ -1528,6 +1527,7 @@ function parseOrderOnlineMenuHits(html: string, dishQuery: string, sourceUrl: st
       .filter(Boolean)
       .join(" ")
       .trim();
+    if (!queryMatchesContext(dishQuery, itemName, description)) continue;
 
     const price = priceLine.startsWith("$") ? priceLine : `$${priceLine}`;
     const key = `${canonicalItemKey(itemName)}|${price}`;
