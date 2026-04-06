@@ -79,7 +79,7 @@ type ManualOverrideResult = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v52";
+const CACHE_VERSION = "v53";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -2096,6 +2096,16 @@ function placeLabel(place: Place) {
   return place.displayName?.text || place.formattedAddress || "Unknown";
 }
 
+function looksLikeTargetRestaurant(label: string, query: string) {
+  const normalizedLabel = normalize(label);
+  const normalizedQuery = normalize(query);
+
+  if (normalizedLabel.includes("kung food")) return true;
+  if (normalizedQuery.includes("general") && normalizedLabel.includes("kung food")) return true;
+
+  return false;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { dish, address, radiusMiles } = await req.json();
@@ -2377,7 +2387,19 @@ export async function POST(req: NextRequest) {
         .slice(0, 100);
 
     const checkedPlaces = results.map((result) => normalize(result.restaurantName));
-    const diagnosticsLines = enrichedPlaces.slice(0, 20).map((place) => {
+    const diagnosticsSeed = [
+      ...enrichedPlaces.slice(0, 20),
+      ...enrichedPlaces.filter((place) => looksLikeTargetRestaurant(placeLabel(place), dish)),
+    ];
+    const seenDiagnosticPlaces = new Set<string>();
+    const diagnosticsLines = diagnosticsSeed
+      .filter((place) => {
+        const key = `${normalize(placeLabel(place))}|${normalize(place.formattedAddress || "")}`;
+        if (seenDiagnosticPlaces.has(key)) return false;
+        seenDiagnosticPlaces.add(key);
+        return true;
+      })
+      .map((place) => {
       const label = placeLabel(place);
       const normalizedLabel = normalize(label);
       const hasWebsite = Boolean(place.websiteUri);
