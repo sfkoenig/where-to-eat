@@ -73,7 +73,7 @@ type KnownRestaurantFallback = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v46";
+const CACHE_VERSION = "v47";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -288,6 +288,21 @@ function isVegetarianCompatible(text: string) {
   return Array.from(VEGETARIAN_SIGNALS).some((term) => forms.has(singularize(term)));
 }
 
+function isDogLikeQuery(query: string) {
+  const { coreTokens } = parseQueryIntent(query);
+  return coreTokens.some((token) => token === "dog" || token === "sausage");
+}
+
+function hasDogLikeAnchor(text: string) {
+  const normalized = ` ${normalize(text)} `;
+  return (
+    normalized.includes(" dog ") ||
+    normalized.includes(" hot dog ") ||
+    normalized.includes(" hotdog ") ||
+    normalized.includes(" sausage ")
+  );
+}
+
 function containsExplicitMeat(text: string) {
   const normalized = ` ${normalize(text)} `;
   const forms = buildTokenForms(text);
@@ -326,6 +341,17 @@ function shouldKeepResultForQuery(result: SearchResult, query: string) {
 
   const hasExplicitMeat = containsExplicitMeat(combinedText);
   if (hasExplicitMeat && !hasFlexibleProteinChoice) return false;
+
+  if (isDogLikeQuery(query)) {
+    const visibleHasDogAnchor = hasDogLikeAnchor(visibleText) || hasDogLikeAnchor(result.itemName);
+    if (!visibleHasDogAnchor) return false;
+
+    const explicitVegSignalVisible =
+      isVegetarianCompatible(visibleText) ||
+      FLEXIBLE_PROTEIN_PHRASES.some((phrase) => normalized.includes(` ${phrase} `));
+
+    if (!explicitVegSignalVisible) return false;
+  }
 
   return isVegetarianCompatible(combinedText);
 }
@@ -1461,6 +1487,32 @@ function parseOrderOnlineMenuHits(html: string, dishQuery: string, sourceUrl: st
   return hits;
 }
 
+function parseSourceSpecificMenuHits(html: string, dishQuery: string, sourceUrl: string) {
+  const lower = sourceUrl.toLowerCase();
+
+  if (lower.includes("order.online")) {
+    return [
+      ...parseOrderOnlineMenuHits(html, dishQuery, sourceUrl),
+      ...parseEmbeddedDataMenuHits(html, dishQuery, sourceUrl),
+    ];
+  }
+
+  return [
+    ...parseHiddenInputMenuHits(html, dishQuery, sourceUrl),
+    ...parseStructuredVariantMenuHits(html, dishQuery, sourceUrl),
+    ...parseWixRichTextMenuHits(html, dishQuery, sourceUrl),
+    ...parseEnumeratedMenuHits(html, dishQuery, sourceUrl),
+    ...extractMenuHitsFromHtml(html, dishQuery, sourceUrl),
+    ...parseLocalBlockMenuHits(html, dishQuery, sourceUrl),
+    ...parseSequentialMenuHits(html, dishQuery, sourceUrl),
+    ...parseForwardPriceMenuHits(html, dishQuery, sourceUrl),
+    ...parseLooseTextBlockHits(html, dishQuery, sourceUrl),
+    ...parseEmbeddedDataMenuHits(html, dishQuery, sourceUrl),
+    ...parseOrderOnlineMenuHits(html, dishQuery, sourceUrl),
+    ...parseLittleChihuahuaMenu(html, dishQuery, sourceUrl),
+  ];
+}
+
 function sortLinksByPriority(links: string[]) {
   const priority = (link: string) => {
     const lower = link.toLowerCase();
@@ -1660,18 +1712,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
   const visitedLinks = new Set<string>();
 
   // Try homepage
-  allHits.push(...parseHiddenInputMenuHits(homeHtml, dish, websiteUrl));
-  allHits.push(...parseStructuredVariantMenuHits(homeHtml, dish, websiteUrl));
-  allHits.push(...parseWixRichTextMenuHits(homeHtml, dish, websiteUrl));
-  allHits.push(...parseEnumeratedMenuHits(homeHtml, dish, websiteUrl));
-  allHits.push(...extractMenuHitsFromHtml(homeHtml, dish, websiteUrl));
-  allHits.push(...parseLocalBlockMenuHits(homeHtml, dish, websiteUrl));
-  allHits.push(...parseSequentialMenuHits(homeHtml, dish, websiteUrl));
-  allHits.push(...parseForwardPriceMenuHits(homeHtml, dish, websiteUrl));
-  allHits.push(...parseLooseTextBlockHits(homeHtml, dish, websiteUrl));
-  allHits.push(...parseEmbeddedDataMenuHits(homeHtml, dish, websiteUrl));
-  allHits.push(...parseOrderOnlineMenuHits(homeHtml, dish, websiteUrl));
-  allHits.push(...parseLittleChihuahuaMenu(homeHtml, dish, websiteUrl));
+  allHits.push(...parseSourceSpecificMenuHits(homeHtml, dish, websiteUrl));
 
   // Try menu/order links (Toast/Slice/etc)
   const links = sortLinksByPriority([
@@ -1684,18 +1725,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
 
     const html = await fetchText(link);
     if (!html) continue;
-    allHits.push(...parseHiddenInputMenuHits(html, dish, link));
-    allHits.push(...parseStructuredVariantMenuHits(html, dish, link));
-    allHits.push(...parseWixRichTextMenuHits(html, dish, link));
-    allHits.push(...parseEnumeratedMenuHits(html, dish, link));
-    allHits.push(...extractMenuHitsFromHtml(html, dish, link));
-    allHits.push(...parseLocalBlockMenuHits(html, dish, link));
-    allHits.push(...parseSequentialMenuHits(html, dish, link));
-    allHits.push(...parseForwardPriceMenuHits(html, dish, link));
-    allHits.push(...parseLooseTextBlockHits(html, dish, link));
-    allHits.push(...parseEmbeddedDataMenuHits(html, dish, link));
-    allHits.push(...parseOrderOnlineMenuHits(html, dish, link));
-    allHits.push(...parseLittleChihuahuaMenu(html, dish, link));
+    allHits.push(...parseSourceSpecificMenuHits(html, dish, link));
 
     // One more level deep for category links like ?category=Vegetarian+Burritos
     const nestedLinks = sortLinksByPriority(collectRelevantLinks(html, link, dish)).slice(0, 4);
@@ -1705,18 +1735,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
 
       const nestedHtml = await fetchText(nestedLink);
       if (!nestedHtml) continue;
-      allHits.push(...parseHiddenInputMenuHits(nestedHtml, dish, nestedLink));
-      allHits.push(...parseStructuredVariantMenuHits(nestedHtml, dish, nestedLink));
-      allHits.push(...parseWixRichTextMenuHits(nestedHtml, dish, nestedLink));
-      allHits.push(...parseEnumeratedMenuHits(nestedHtml, dish, nestedLink));
-      allHits.push(...extractMenuHitsFromHtml(nestedHtml, dish, nestedLink));
-      allHits.push(...parseLocalBlockMenuHits(nestedHtml, dish, nestedLink));
-      allHits.push(...parseSequentialMenuHits(nestedHtml, dish, nestedLink));
-      allHits.push(...parseForwardPriceMenuHits(nestedHtml, dish, nestedLink));
-      allHits.push(...parseLooseTextBlockHits(nestedHtml, dish, nestedLink));
-      allHits.push(...parseEmbeddedDataMenuHits(nestedHtml, dish, nestedLink));
-      allHits.push(...parseOrderOnlineMenuHits(nestedHtml, dish, nestedLink));
-      allHits.push(...parseLittleChihuahuaMenu(nestedHtml, dish, nestedLink));
+      allHits.push(...parseSourceSpecificMenuHits(nestedHtml, dish, nestedLink));
     }
   }
 
