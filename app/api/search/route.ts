@@ -79,7 +79,7 @@ type ManualOverrideResult = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v51";
+const CACHE_VERSION = "v52";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -260,6 +260,28 @@ function inferCuisineKeyword(query: string) {
     )
   ) {
     return "thai";
+  }
+
+  if (
+    [
+      "general",
+      "tso",
+      "tsao",
+      "kung",
+      "pao",
+      "mapo",
+      "lo",
+      "mein",
+      "chow",
+      "fried",
+      "rice",
+      "wonton",
+      "dumpling",
+      "szechuan",
+      "schezwan",
+    ].some((token) => forms.has(token))
+  ) {
+    return "chinese";
   }
 
   if (
