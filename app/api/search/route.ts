@@ -79,11 +79,12 @@ type ManualOverrideResult = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v48";
+const CACHE_VERSION = "v49";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
 const MAX_CANDIDATE_RESTAURANTS = 25;
+const SEARCH_TIME_BUDGET_MS = 15000;
 
 const KNOWN_RESTAURANT_FALLBACKS: KnownRestaurantFallback[] = [
   {
@@ -1756,11 +1757,17 @@ async function fetchText(url: string): Promise<string | null> {
   }
 }
 
-async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise<MenuHit[]> {
+async function findDishHitsForWebsite(
+  websiteUrl: string,
+  dish: string,
+  deadlineMs?: number
+): Promise<MenuHit[]> {
   const cacheKey = `${CACHE_VERSION}:menuhits:${normalize(websiteUrl)}:${normalize(dish)}`;
   const cached = await getCachedValue<MenuHit[]>(cacheKey, CACHE_DAYS);
   if (cached) return cached.value;
   const staleCached = await getAnyCachedValue<MenuHit[]>(cacheKey);
+
+  if (deadlineMs && Date.now() >= deadlineMs) return staleCached?.value || [];
 
   const homeHtml = await fetchText(websiteUrl);
   if (!homeHtml) return staleCached?.value || [];
@@ -1777,6 +1784,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
     ...collectRelevantLinks(homeHtml, websiteUrl, dish),
   ]);
   for (const link of links) {
+    if (deadlineMs && Date.now() >= deadlineMs) break;
     if (visitedLinks.has(link)) continue;
     visitedLinks.add(link);
 
@@ -1787,6 +1795,7 @@ async function findDishHitsForWebsite(websiteUrl: string, dish: string): Promise
     // One more level deep for category links like ?category=Vegetarian+Burritos
     const nestedLinks = sortLinksByPriority(collectRelevantLinks(html, link, dish)).slice(0, 4);
     for (const nestedLink of nestedLinks) {
+      if (deadlineMs && Date.now() >= deadlineMs) break;
       if (visitedLinks.has(nestedLink)) continue;
       visitedLinks.add(nestedLink);
 
@@ -1994,35 +2003,55 @@ function dedupePlaces(places: Place[]) {
 async function collectResultsForPlaces(
   places: Place[],
   dish: string,
-  center: { lat: number; lng: number }
+  center: { lat: number; lng: number },
+  deadlineMs?: number
 ) : Promise<PlaceCollectionResult> {
   const diagnostics: string[] = [];
-  const placeResults = await chunkedMap(places, SITE_CHECK_BATCH_SIZE, async (p) => {
-    const website = p.websiteUri as string | undefined;
-    if (!website) return [] as SearchResult[];
+  const results: SearchResult[] = [];
 
-    const hits = await findDishHitsForWebsite(website, dish);
-    diagnostics.push(`${placeLabel(p)} [crawl]: hits=${hits.length}, website=${website}`);
-    if (hits.length === 0) return [] as SearchResult[];
+  for (let i = 0; i < places.length; i += SITE_CHECK_BATCH_SIZE) {
+    if (deadlineMs && Date.now() >= deadlineMs) {
+      diagnostics.push(`crawl budget exhausted after checking ${i} places`);
+      break;
+    }
 
-    return hits.map((hit) => ({
-      restaurantName: p.displayName?.text || "Unknown",
-      address: p.formattedAddress || "",
-      rating: p.rating,
-      openNow: p.currentOpeningHours?.openNow,
-      dish,
-      itemName: hit.itemName,
-      price: hit.price,
-      description: finalizedDescription(hit),
-      sourceType: hit.sourceType || "website_or_ordering_page",
-      sourceUrl: hit.sourceUrl,
-      websiteUrl: website,
-      googleMapsUrl: p.googleMapsUri || null,
-      distanceMiles: distanceMiles(center.lat, center.lng, p.location?.latitude, p.location?.longitude),
-    }));
-  });
+    const batch = places.slice(i, i + SITE_CHECK_BATCH_SIZE);
+    const batchResults = await Promise.all(
+      batch.map(async (p) => {
+        const website = p.websiteUri as string | undefined;
+        if (!website) return [] as SearchResult[];
 
-  return { results: placeResults.flat(), diagnostics };
+        if (deadlineMs && Date.now() >= deadlineMs) {
+          diagnostics.push(`${placeLabel(p)} [crawl]: skipped due to time budget`);
+          return [] as SearchResult[];
+        }
+
+        const hits = await findDishHitsForWebsite(website, dish, deadlineMs);
+        diagnostics.push(`${placeLabel(p)} [crawl]: hits=${hits.length}, website=${website}`);
+        if (hits.length === 0) return [] as SearchResult[];
+
+        return hits.map((hit) => ({
+          restaurantName: p.displayName?.text || "Unknown",
+          address: p.formattedAddress || "",
+          rating: p.rating,
+          openNow: p.currentOpeningHours?.openNow,
+          dish,
+          itemName: hit.itemName,
+          price: hit.price,
+          description: finalizedDescription(hit),
+          sourceType: hit.sourceType || "website_or_ordering_page",
+          sourceUrl: hit.sourceUrl,
+          websiteUrl: website,
+          googleMapsUrl: p.googleMapsUri || null,
+          distanceMiles: distanceMiles(center.lat, center.lng, p.location?.latitude, p.location?.longitude),
+        }));
+      })
+    );
+
+    results.push(...batchResults.flat());
+  }
+
+  return { results, diagnostics };
 }
 
 function placeLabel(place: Place) {
@@ -2053,6 +2082,7 @@ export async function POST(req: NextRequest) {
 
     const meters = Math.round((Number(radiusMiles || 1) * 1609.34));
     const center = await geocodeAddress(address, apiKey);
+    const searchDeadlineMs = Date.now() + SEARCH_TIME_BUDGET_MS;
     const placesCacheKey = `${CACHE_VERSION}:places:${normalize(address)}:${meters}`;
     const cachedPlaces = await getCachedValue<Place[]>(placesCacheKey, CACHE_DAYS);
     let places: Place[];
@@ -2177,13 +2207,22 @@ export async function POST(req: NextRequest) {
 
     const crawlablePlaces = enrichedPlaces.filter((p) => p.websiteUri);
     const firstPassPlaces = crawlablePlaces.slice(0, MAX_CANDIDATE_RESTAURANTS);
-    const firstPassCollection = await collectResultsForPlaces(firstPassPlaces, dish, center);
+    const firstPassCollection = await collectResultsForPlaces(firstPassPlaces, dish, center, searchDeadlineMs);
     let results: SearchResult[] = firstPassCollection.results;
     const crawlDiagnostics = [...firstPassCollection.diagnostics];
 
-    if (results.length === 0 && crawlablePlaces.length > MAX_CANDIDATE_RESTAURANTS) {
+    if (
+      results.length === 0 &&
+      crawlablePlaces.length > MAX_CANDIDATE_RESTAURANTS &&
+      Date.now() < searchDeadlineMs
+    ) {
       const overflowPlaces = crawlablePlaces.slice(MAX_CANDIDATE_RESTAURANTS);
-      const overflowCollection = await collectResultsForPlaces(overflowPlaces, dish, center);
+      const overflowCollection = await collectResultsForPlaces(
+        overflowPlaces,
+        dish,
+        center,
+        searchDeadlineMs
+      );
       results = [...results, ...overflowCollection.results];
       crawlDiagnostics.push(...overflowCollection.diagnostics);
     }
