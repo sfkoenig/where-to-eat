@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as cheerio from "cheerio";
 import { getAnyCachedValue, getCachedValue, setCachedValue } from "@/lib/server-cache";
+import { MANUAL_RESTAURANT_OVERRIDES } from "@/lib/manual-overrides";
 
 type MenuHit = {
   itemName: string;
@@ -72,8 +73,13 @@ type KnownRestaurantFallback = {
   cuisines: string[];
 };
 
+type ManualOverrideResult = {
+  results: SearchResult[];
+  diagnostics: string[];
+};
+
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v47";
+const CACHE_VERSION = "v48";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -244,6 +250,22 @@ function inferCuisineKeyword(query: string) {
   }
 
   return "";
+}
+
+function isRestaurantRelevantToQuery(
+  restaurantName: string,
+  query: string,
+  cuisines: string[] = [],
+  sourceNote = ""
+) {
+  const cuisineKeyword = inferCuisineKeyword(query);
+  if (cuisineKeyword && cuisines.length > 0 && !cuisines.includes(cuisineKeyword)) return false;
+
+  const text = `${restaurantName} ${sourceNote}`;
+  if (queryMatchesText(query, text)) return true;
+  if (cuisineKeyword && normalize(text).includes(cuisineKeyword)) return true;
+
+  return cuisines.length === 0;
 }
 
 function buildTokenForms(text: string) {
@@ -1790,6 +1812,40 @@ async function findDishHitsForKnownFallback(
   }));
 }
 
+function findDishHitsForManualOverride(
+  override: (typeof MANUAL_RESTAURANT_OVERRIDES)[number],
+  dish: string,
+  center: { lat: number; lng: number }
+): ManualOverrideResult {
+  const diagnostics: string[] = [];
+  const overrideDistance = distanceMiles(center.lat, center.lng, override.lat, override.lng);
+
+  const matchingEntries = override.entries.filter((entry) => {
+    const searchableText = [entry.itemName, entry.description, ...(entry.tags || [])].join(" ");
+    return queryMatchesText(dish, searchableText);
+  });
+
+  diagnostics.push(
+    `${override.restaurantName} [manual override]: entries=${override.entries.length}, matched=${matchingEntries.length}, source=${override.sourceNote}`
+  );
+
+  const results = matchingEntries.map((entry) => ({
+    restaurantName: override.restaurantName,
+    address: override.address,
+    dish,
+    itemName: entry.itemName,
+    price: entry.price,
+    description: entry.description || "No description available.",
+    sourceType: "manual_override",
+    sourceUrl: entry.sourceUrl,
+    websiteUrl: override.websiteUrl,
+    googleMapsUrl: override.googleMapsUrl || null,
+    distanceMiles: overrideDistance,
+  }));
+
+  return { results, diagnostics };
+}
+
 async function geocodeAddress(address: string, apiKey: string) {
   const cacheKey = `${CACHE_VERSION}:geocode:${normalize(address)}`;
   const cached = await getCachedValue<{ lat: number; lng: number }>(cacheKey, CACHE_DAYS);
@@ -2104,6 +2160,22 @@ export async function POST(req: NextRequest) {
       return withinRadius(fallbackDistance, Number(radiusMiles || 1));
     });
 
+    const applicableManualOverrides = MANUAL_RESTAURANT_OVERRIDES.filter((override) => {
+      if (
+        !isRestaurantRelevantToQuery(
+          override.restaurantName,
+          dish,
+          override.cuisines || [],
+          override.sourceNote
+        )
+      ) {
+        return false;
+      }
+
+      const overrideDistance = distanceMiles(center.lat, center.lng, override.lat, override.lng);
+      return withinRadius(overrideDistance, Number(radiusMiles || 1));
+    });
+
     for (const fallback of applicableFallbacks) {
       const alreadyPresent = results.some(
         (result) =>
@@ -2122,6 +2194,12 @@ export async function POST(req: NextRequest) {
           distanceMiles: distanceMiles(center.lat, center.lng, fallback.lat, fallback.lng),
         }))
       );
+    }
+
+    for (const override of applicableManualOverrides) {
+      const manualOverride = findDishHitsForManualOverride(override, dish, center);
+      crawlDiagnostics.push(...manualOverride.diagnostics);
+      results.push(...manualOverride.results);
     }
 
     const requestedRadiusMiles = Number(radiusMiles || 1);
@@ -2220,6 +2298,15 @@ export async function POST(req: NextRequest) {
       );
       diagnosticsLines.push(
         `${fallback.restaurantName} [fallback]: in_radius=yes, matched=${fallbackMatched ? "yes" : "no"}`
+      );
+    }
+
+    for (const override of applicableManualOverrides) {
+      const overrideMatched = finalResults.some(
+        (result) => normalize(result.restaurantName) === normalize(override.restaurantName)
+      );
+      diagnosticsLines.push(
+        `${override.restaurantName} [manual override]: in_radius=yes, entries=${override.entries.length}, matched=${overrideMatched ? "yes" : "no"}`
       );
     }
 
