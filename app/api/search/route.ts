@@ -79,7 +79,7 @@ type ManualOverrideResult = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v54";
+const CACHE_VERSION = "v55";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -751,7 +751,7 @@ function parseWixRichTextMenuHits(html: string, dishQuery: string, sourceUrl: st
 
     const priceMatch = titleText.match(/\$\s?\d{1,3}(?:\.\d{2})?/);
     const itemName = cleanDisplayText(titleText.replace(/\$\s?\d{1,3}(?:\.\d{2})?/g, " "));
-    if (!itemName) return;
+    if (!itemName) continue;
 
     let price = priceMatch?.[0]?.replace(/\s+/g, "");
     if (!price) {
@@ -1581,39 +1581,40 @@ function parseOrderOnlineMenuHits(html: string, dishQuery: string, sourceUrl: st
 }
 
 function parseQuickRestaurantMenuHits(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
-  const $ = cheerio.load(html);
   const hits: MenuHit[] = [];
   const seen = new Set<string>();
 
-  $(".menu-item-content-wrap").each((_, el) => {
-    const itemName = cleanDisplayText($(el).find(".menu-item-title").first().text());
+  const blocks = html.split(/<div class="menu-item\s+menu-item-\d+\s+menu-item-type-product">/i).slice(1);
+
+  for (const block of blocks) {
+    const itemNameMatch = block.match(/<h5 class="menu-item-title">([\s\S]*?)<\/h5>/i);
+    const itemName = cleanDisplayText(cheerio.load(itemNameMatch?.[1] || "").text());
     if (!itemName) return;
     if (looksLikeGarbageText(itemName) || looksLikeGenericItemName(itemName) || looksLikeMetadataText(itemName)) {
-      return;
+      continue;
     }
 
+    const descMatch = block.match(
+      /<div class="menu-item-content-desc[^"]*">([\s\S]*?)<p><a class="menuitem_more"/i
+    );
     const description = cleanDisplayText(
-      $(el)
-        .find(".menu-item-content-desc")
-        .first()
+      cheerio
+        .load((descMatch?.[1] || "").replace(/<p>&nbsp;<\/p>/gi, " ").replace(/&nbsp;/gi, " "))
         .text()
         .replace(/\bmore\b/gi, " ")
     );
 
-    if (!queryMatchesContext(dishQuery, itemName, description)) return;
+    if (!queryMatchesContext(dishQuery, itemName, description)) continue;
 
-    const priceTexts = $(el)
-      .find(".price-base, .price-bold, .menu-item-price, .menu-item-content-price")
-      .map((__, priceEl) => cleanDisplayText($(priceEl).text()))
-      .get()
-      .flatMap((text) => text.match(/\$\s?\d{1,3}(?:\.\d{2})?/g) || [])
-      .map((price) => price.replace(/\s+/g, ""));
+    const priceTexts = Array.from(block.matchAll(/\$\s?\d{1,3}(?:\.\d{2})?/g)).map((match) =>
+      match[0].replace(/\s+/g, "")
+    );
 
     const price = chooseBestPriceLine(priceTexts);
-    if (!price) return;
+    if (!price) continue;
 
     const key = `${canonicalItemKey(itemName)}|${price}`;
-    if (seen.has(key)) return;
+    if (seen.has(key)) continue;
     seen.add(key);
 
     hits.push({
@@ -1624,7 +1625,7 @@ function parseQuickRestaurantMenuHits(html: string, dishQuery: string, sourceUrl
       sourceUrl,
       sourceType: inferSourceType(sourceUrl),
     });
-  });
+  }
 
   return hits;
 }
