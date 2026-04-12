@@ -751,7 +751,7 @@ function parseWixRichTextMenuHits(html: string, dishQuery: string, sourceUrl: st
 
     const priceMatch = titleText.match(/\$\s?\d{1,3}(?:\.\d{2})?/);
     const itemName = cleanDisplayText(titleText.replace(/\$\s?\d{1,3}(?:\.\d{2})?/g, " "));
-    if (!itemName) continue;
+    if (!itemName) return;
 
     let price = priceMatch?.[0]?.replace(/\s+/g, "");
     if (!price) {
@@ -1589,7 +1589,7 @@ function parseQuickRestaurantMenuHits(html: string, dishQuery: string, sourceUrl
   for (const block of blocks) {
     const itemNameMatch = block.match(/<h5 class="menu-item-title">([\s\S]*?)<\/h5>/i);
     const itemName = cleanDisplayText(cheerio.load(itemNameMatch?.[1] || "").text());
-    if (!itemName) return;
+    if (!itemName) continue;
     if (looksLikeGarbageText(itemName) || looksLikeGenericItemName(itemName) || looksLikeMetadataText(itemName)) {
       continue;
     }
