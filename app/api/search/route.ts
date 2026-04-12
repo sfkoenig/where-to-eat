@@ -79,7 +79,7 @@ type ManualOverrideResult = {
 };
 
 const CACHE_DAYS = 30;
-const CACHE_VERSION = "v53";
+const CACHE_VERSION = "v54";
 const FETCH_TIMEOUT_MS = 5000;
 const ORDERING_FETCH_TIMEOUT_MS = 9000;
 const SITE_CHECK_BATCH_SIZE = 4;
@@ -1580,8 +1580,61 @@ function parseOrderOnlineMenuHits(html: string, dishQuery: string, sourceUrl: st
   return hits;
 }
 
+function parseQuickRestaurantMenuHits(html: string, dishQuery: string, sourceUrl: string): MenuHit[] {
+  const $ = cheerio.load(html);
+  const hits: MenuHit[] = [];
+  const seen = new Set<string>();
+
+  $(".menu-item-content-wrap").each((_, el) => {
+    const itemName = cleanDisplayText($(el).find(".menu-item-title").first().text());
+    if (!itemName) return;
+    if (looksLikeGarbageText(itemName) || looksLikeGenericItemName(itemName) || looksLikeMetadataText(itemName)) {
+      return;
+    }
+
+    const description = cleanDisplayText(
+      $(el)
+        .find(".menu-item-content-desc")
+        .first()
+        .text()
+        .replace(/\bmore\b/gi, " ")
+    );
+
+    if (!queryMatchesContext(dishQuery, itemName, description)) return;
+
+    const priceTexts = $(el)
+      .find(".price-base, .price-bold, .menu-item-price, .menu-item-content-price")
+      .map((__, priceEl) => cleanDisplayText($(priceEl).text()))
+      .get()
+      .flatMap((text) => text.match(/\$\s?\d{1,3}(?:\.\d{2})?/g) || [])
+      .map((price) => price.replace(/\s+/g, ""));
+
+    const price = chooseBestPriceLine(priceTexts);
+    if (!price) return;
+
+    const key = `${canonicalItemKey(itemName)}|${price}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    hits.push({
+      itemName,
+      description,
+      itemText: [itemName, description].filter(Boolean).join(" "),
+      price,
+      sourceUrl,
+      sourceType: inferSourceType(sourceUrl),
+    });
+  });
+
+  return hits;
+}
+
 function parseSourceSpecificMenuHits(html: string, dishQuery: string, sourceUrl: string) {
   const lower = sourceUrl.toLowerCase();
+
+  if (html.includes("quick-restaurant-menu-pro") || html.includes('class="erm-menu')) {
+    return parseQuickRestaurantMenuHits(html, dishQuery, sourceUrl);
+  }
 
   if (lower.includes("order.online")) {
     return [
